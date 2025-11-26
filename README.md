@@ -60,7 +60,9 @@ docker run -d \
   podman run -d --replace \
   --name sub-filter \
   -p 8000:8000  \
-  -v ./sub.txt:/sub.txt:ro,z  -v ./bad.txt:/bad.txt:ro,z  -v ./uagent.txt:/uagent.txt:ro,z  \
+  -v ./sub.txt:/sub.txt:ro,z \
+  -v ./bad.txt:/bad.txt:ro,z \
+  -v ./uagent.txt:/uagent.txt:ro,z  \
   sub-filter \
   8000 1800 ./sub.txt ./bad.txt ./uagent.txt
   ```
