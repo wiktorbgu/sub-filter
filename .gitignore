@@ -34,3 +34,4 @@ go.work.sum
 cache/
 filter
 .DS_Store
+lint.txt

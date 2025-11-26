@@ -32,13 +32,38 @@ var (
 	cacheDir  string
 	cacheTTL  time.Duration
 	sources   SourceMap
-	badWords  []string // lowercase
-	allowedUA []string // дополнительные разрешённые User-Agent (подстроки или полные)
+	badWords  []string
+	allowedUA []string
 	mu        sync.RWMutex
 )
 
-// Встроенные разрешённые префиксы (регистронезависимо)
 var builtinAllowedPrefixes = []string{"clash", "happ"}
+
+// LineProcessor defines how to transform a line
+type LineProcessor func(string) string
+
+// loadTextFile reads a text file, skips empty lines and comments, applies processor
+func loadTextFile(filename string, processor LineProcessor) ([]string, error) {
+	file, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var result []string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if processor != nil {
+			line = processor(line)
+		}
+		result = append(result, line)
+	}
+	return result, scanner.Err()
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -74,23 +99,32 @@ func main() {
 		os.Exit(1)
 	}
 
-	var err error
-	sources, err = loadSources(sourcesFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to load sources: %v\n", err)
-		os.Exit(1)
+	// Load sources: special case (map with auto-numbered keys)
+	{
+		lines, err := loadTextFile(sourcesFile, nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to load sources: %v\n", err)
+			os.Exit(1)
+		}
+		sources = make(SourceMap)
+		for i, line := range lines {
+			sources[strconv.Itoa(i+1)] = line
+		}
 	}
 
-	badWords, err = loadBadWords(badWordsFile)
+	// Load bad words: to lower case
+	var err error
+	badWords, err = loadTextFile(badWordsFile, strings.ToLower)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to load bad words: %v (using empty list)\n", err)
 		badWords = []string{}
 	}
 
-	allowedUA, err = loadUserAgents(uagentFile)
+	// Load user agents: as-is
+	allowedUA, err = loadTextFile(uagentFile, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Note: using built-in User-Agent rules only (no %s or error: %v)\n", uagentFile, err)
-		allowedUA = []string{} // only builtin
+		allowedUA = []string{}
 	}
 
 	http.HandleFunc("/filter", handler)
@@ -110,65 +144,6 @@ func main() {
 	}
 }
 
-func loadSources(filename string) (SourceMap, error) {
-	file, err := os.Open(filename)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	sources := make(SourceMap)
-	scanner := bufio.NewScanner(file)
-	id := 1
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		sources[strconv.Itoa(id)] = line
-		id++
-	}
-	return sources, scanner.Err()
-}
-
-func loadBadWords(filename string) ([]string, error) {
-	file, err := os.Open(filename)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	var words []string
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		words = append(words, strings.ToLower(line))
-	}
-	return words, scanner.Err()
-}
-
-func loadUserAgents(filename string) ([]string, error) {
-	file, err := os.Open(filename)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	var agents []string
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		agents = append(agents, line)
-	}
-	return agents, scanner.Err()
-}
-
 // isValidUserAgent checks if UA is allowed
 func isValidUserAgent(ua string) bool {
 	lowerUA := strings.ToLower(ua)
@@ -180,14 +155,13 @@ func isValidUserAgent(ua string) bool {
 		}
 	}
 
-	// 2. Custom list from uagent.txt (exact or substring match)
+	// 2. Custom list from uagent.txt (substring match, case-insensitive)
 	mu.RLock()
 	defer mu.RUnlock()
 	for _, allowed := range allowedUA {
 		if allowed == "" {
 			continue
 		}
-		// Treat each line as a substring to match (case-insensitive)
 		if strings.Contains(lowerUA, strings.ToLower(allowed)) {
 			return true
 		}
@@ -357,9 +331,33 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		out = append(out, buf.String())
 	}
 
-	final := strings.Join(out, "\n")
-	_ = os.WriteFile(modCache, []byte(final), 0644)
+	// --- ДОБАВЛЕНИЕ ЗАГОЛОВКА ПРОФИЛЯ ---
+	sourceHost := "unknown"
+	if parsedSource, err := url.Parse(sourceURL); err == nil && parsedSource.Host != "" {
+		// Разделяем хост и порт (если порт есть)
+		if host, _, err := net.SplitHostPort(parsedSource.Host); err == nil {
+			sourceHost = host
+		} else {
+			// Порт отсутствует — весь Host и есть имя хоста
+			sourceHost = parsedSource.Host
+		}
+	}
 
+	// Округление TTL вверх до ближайшего часа
+	ttlHours := int64((cacheTTL + time.Hour - 1) / time.Hour)
+	if ttlHours < 1 {
+		ttlHours = 1
+	}
+
+	profileTitle := fmt.Sprintf("#profile-title: %s filtered %s", sourceHost, id)
+	profileInterval := fmt.Sprintf("#profile-update-interval: %d", ttlHours)
+
+	// Формируем финальный файл: заголовок + пустая строка + URI
+	finalLines := []string{profileTitle, profileInterval, ""}
+	finalLines = append(finalLines, out...)
+	final := strings.Join(finalLines, "\n")
+
+	_ = os.WriteFile(modCache, []byte(final), 0644)
 	serveFile(w, r, []byte(final), sourceURL, id)
 }
 
@@ -383,7 +381,7 @@ func serveFile(w http.ResponseWriter, r *http.Request, content []byte, sourceURL
 	w.Write(content)
 }
 
-// --- Validation helpers (без изменений) ---
+// --- Validation helpers ---
 
 var (
 	uuidRegex1 = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
