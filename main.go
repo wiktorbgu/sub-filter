@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
 	"golang.org/x/time/rate"
 )
 
@@ -34,7 +35,12 @@ const (
 	maxSourceBytes      = 10 * 1024 * 1024 // 10 MB
 )
 
-type SourceMap map[string]string
+type SafeSource struct {
+	URL string
+	IP  net.IP
+}
+
+type SourceMap map[string]*SafeSource
 
 var (
 	cacheDir   string
@@ -43,16 +49,19 @@ var (
 	badWords   []string
 	allowedUA  []string
 	validIDRe  = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
-	uuidRegex1 = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
-	hostRegex  = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 	ssCipherRe = regexp.MustCompile(`^[a-zA-Z0-9_+-]+$`)
+	hostRegex  = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 
-	// Rate limiter: 10 requests per second per IP, burst 5
+	// Rate limiting with TTL
 	ipLimiter    = make(map[string]*rate.Limiter)
+	ipLastSeen   = make(map[string]time.Time)
 	limiterMutex sync.RWMutex
-)
 
-var builtinAllowedPrefixes = []string{"clash", "happ"}
+	// Deduplicate concurrent fetches
+	fetchGroup singleflight.Group
+
+	builtinAllowedPrefixes = []string{"clash", "happ"}
+)
 
 type LineProcessor func(string) string
 
@@ -63,7 +72,6 @@ func loadTextFile(filename string, processor LineProcessor) ([]string, error) {
 	}
 	defer file.Close()
 
-	// Skip UTF-8 BOM if present
 	reader := bufio.NewReader(file)
 	if b, err := reader.Peek(3); err == nil && bytes.Equal(b, []byte{0xEF, 0xBB, 0xBF}) {
 		reader.Discard(3)
@@ -72,8 +80,7 @@ func loadTextFile(filename string, processor LineProcessor) ([]string, error) {
 	var result []string
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
-		// Create a copy of the line to avoid buffer reuse issues
-		line := strings.TrimSpace(string([]byte(scanner.Text())))
+		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -85,7 +92,6 @@ func loadTextFile(filename string, processor LineProcessor) ([]string, error) {
 	return result, scanner.Err()
 }
 
-// isValidSourceURL validates the URL structure (not DNS resolution)
 func isValidSourceURL(rawURL string) bool {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -104,12 +110,10 @@ func isValidSourceURL(rawURL string) bool {
 	if strings.HasPrefix(host, "127.") {
 		return false
 	}
-	if strings.HasSuffix(host, ".local") ||
-		strings.HasSuffix(host, ".internal") {
+	if strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".internal") {
 		return false
 	}
 	if strings.HasPrefix(host, "xn--") {
-		// Block IDN homograph attacks
 		return false
 	}
 	if ip := net.ParseIP(host); ip != nil {
@@ -121,64 +125,41 @@ func isValidSourceURL(rawURL string) bool {
 	return true
 }
 
-// isIPAllowed checks if an IP is safe to connect to
 func isIPAllowed(ip net.IP) bool {
 	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
 		ip.IsLinkLocalMulticast() || ip.IsMulticast() {
 		return false
 	}
-	// Block IPv6 with zone ID (e.g., fe80::1%eth0)
-	if ip.To4() == nil && strings.Contains(ip.String(), "%") {
-		return false
-	}
 	return true
 }
 
-// safeDialContext prevents SSRF by validating resolved IPs
-func safeDialContext(ctx context.Context, network, addr string, originalHost string) (net.Conn, error) {
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		return nil, fmt.Errorf("invalid address format")
+func getLimiter(ip string) *rate.Limiter {
+	limiterMutex.Lock()
+	defer limiterMutex.Unlock()
+	ipLastSeen[ip] = time.Now()
+	if limiter, exists := ipLimiter[ip]; exists {
+		return limiter
 	}
-
-	// Resolve host
-	ips, err := net.LookupIP(host)
-	if err != nil {
-		return nil, err
-	}
-
-	// Find first public, allowed IP
-	var allowedIP net.IP
-	for _, ip := range ips {
-		if isIPAllowed(ip) {
-			allowedIP = ip
-			break
-		}
-	}
-
-	if allowedIP == nil {
-		return nil, fmt.Errorf("no public/resolvable IP for host %s", host)
-	}
-
-	dialer := &net.Dialer{Timeout: 5 * time.Second}
-	return dialer.DialContext(ctx, network, net.JoinHostPort(allowedIP.String(), port))
+	limiter := rate.NewLimiter(rate.Every(100*time.Millisecond), 5)
+	ipLimiter[ip] = limiter
+	return limiter
 }
 
-func getLimiter(ip string) *rate.Limiter {
-	limiterMutex.RLock()
-	limiter, exists := ipLimiter[ip]
-	limiterMutex.RUnlock()
-	if !exists {
-		limiterMutex.Lock()
-		// Double-check
-		limiter, exists = ipLimiter[ip]
-		if !exists {
-			limiter = rate.NewLimiter(rate.Every(100*time.Millisecond), 5) // 10 req/s
-			ipLimiter[ip] = limiter
+func cleanupLimiters() {
+	ticker := time.NewTicker(2 * time.Minute)
+	go func() {
+		for range ticker.C {
+			limiterMutex.Lock()
+			now := time.Now()
+			for ip, last := range ipLastSeen {
+				if now.Sub(last) > 30*time.Minute {
+					delete(ipLimiter, ip)
+					delete(ipLastSeen, ip)
+				}
+			}
+			limiterMutex.Unlock()
 		}
-		limiterMutex.Unlock()
-	}
-	return limiter
+	}()
 }
 
 func main() {
@@ -215,7 +196,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Load and validate sources
+	// Load and validate sources with IP resolution
 	lines, err := loadTextFile(sourcesFile, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load sources: %v\n", err)
@@ -228,7 +209,40 @@ func main() {
 			fmt.Fprintf(os.Stderr, "⚠️  Skipping invalid or unsafe source URL: %s\n", line)
 			continue
 		}
-		sources[strconv.Itoa(validIndex)] = line
+
+		u, _ := url.Parse(line)
+		host := u.Hostname()
+		portStr := u.Port()
+		if portStr == "" {
+			if u.Scheme == "https" {
+				portStr = "443"
+			} else {
+				portStr = "80"
+			}
+		}
+
+		ips, err := net.LookupIP(host)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "⚠️  Failed to resolve host %s: %v\n", host, err)
+			continue
+		}
+
+		var allowedIP net.IP
+		for _, ip := range ips {
+			if isIPAllowed(ip) {
+				allowedIP = ip
+				break
+			}
+		}
+		if allowedIP == nil {
+			fmt.Fprintf(os.Stderr, "⚠️  No allowed public IP for host %s\n", host)
+			continue
+		}
+
+		sources[strconv.Itoa(validIndex)] = &SafeSource{
+			URL: line,
+			IP:  allowedIP,
+		}
 		validIndex++
 	}
 	if len(sources) == 0 {
@@ -236,20 +250,19 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Load bad words
 	badWords, err = loadTextFile(badWordsFile, strings.ToLower)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to load bad words: %v (using empty list)\n", err)
 		badWords = []string{}
 	}
 
-	// Load user agents
 	allowedUA, err = loadTextFile(uagentFile, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Note: using built-in User-Agent rules only (no %s or error: %v)\n", uagentFile, err)
 		allowedUA = []string{}
 	}
 
+	cleanupLimiters()
 	http.HandleFunc("/filter", handler)
 	fmt.Printf("Server starting on :%s\n", port)
 	fmt.Printf("Valid sources loaded: %d\n", len(sources))
@@ -287,7 +300,6 @@ func isValidUserAgent(ua string) bool {
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
-	// Rate limiting per IP
 	clientIP, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		clientIP = r.RemoteAddr
@@ -309,14 +321,13 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sourceURL, exists := sources[id]
+	source, exists := sources[id]
 	if !exists {
 		http.Error(w, "Invalid id", http.StatusBadRequest)
 		return
 	}
 
-	// Re-validate sourceURL to ensure it's safe and extract host
-	parsedSource, err := url.Parse(sourceURL)
+	parsedSource, err := url.Parse(source.URL)
 	if err != nil || parsedSource.Host == "" {
 		http.Error(w, "Invalid source URL", http.StatusBadRequest)
 		return
@@ -327,21 +338,18 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create safe cache file paths
 	origCache := filepath.Join(cacheDir, "orig_"+id+".txt")
 	modCache := filepath.Join(cacheDir, "mod_"+id+".txt")
 	rejectedCache := filepath.Join(cacheDir, "rejected_"+id+".txt")
 
-	// Ensure cache file paths are within cacheDir to prevent path traversal
 	if !isPathSafe(origCache, cacheDir) || !isPathSafe(modCache, cacheDir) || !isPathSafe(rejectedCache, cacheDir) {
 		http.Error(w, "Invalid id", http.StatusBadRequest)
 		return
 	}
 
-	// Try mod cache
 	if info, err := os.Stat(modCache); err == nil && time.Since(info.ModTime()) <= cacheTTL {
 		if content, err := os.ReadFile(modCache); err == nil {
-			serveFile(w, r, content, sourceURL, id)
+			serveFile(w, r, content, source.URL, id)
 			return
 		}
 	}
@@ -354,11 +362,21 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if origContent == nil {
+		_, portStr, _ := net.SplitHostPort(parsedSource.Host)
+		if portStr == "" {
+			if parsedSource.Scheme == "https" {
+				portStr = "443"
+			} else {
+				portStr = "80"
+			}
+		}
+
 		client := &http.Client{
 			Timeout: 10 * time.Second,
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-					return safeDialContext(ctx, network, addr, host)
+					dialer := &net.Dialer{Timeout: 5 * time.Second}
+					return dialer.DialContext(ctx, network, net.JoinHostPort(source.IP.String(), portStr))
 				},
 				TLSClientConfig: &tls.Config{
 					ServerName: host,
@@ -368,68 +386,60 @@ func handler(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 
-		req, err := http.NewRequest("GET", sourceURL, nil)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("Invalid source URL: %v", err), http.StatusBadGateway)
-			return
-		}
-		req.Header.Set("User-Agent", "go-filter/1.0")
-
-		resp, err := client.Do(req)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("Failed to fetch source %s (error: %v)", sourceURL, err), http.StatusBadGateway)
-			return
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode >= 400 {
-			http.Error(w, fmt.Sprintf("Failed to fetch source %s (HTTP %d)", sourceURL, resp.StatusCode), http.StatusBadGateway)
-			return
-		}
-
-		origContent, err = io.ReadAll(io.LimitReader(resp.Body, maxSourceBytes))
-		if err != nil {
-			http.Error(w, fmt.Sprintf("Failed to read response: %v", err), http.StatusBadGateway)
-			return
-		}
-
-		// Write original content atomically
-		tmpFile := origCache + ".tmp"
-		if err := os.WriteFile(tmpFile, origContent, 0o644); err == nil {
-			if err := os.Rename(tmpFile, origCache); err != nil {
-				// Log error or handle it, original file might be left if rename fails
-				fmt.Fprintf(os.Stderr, "Failed to rename temp cache file: %v\n", err)
+		result, err, _ := fetchGroup.Do(id, func() (interface{}, error) {
+			req, err := http.NewRequest("GET", source.URL, nil)
+			if err != nil {
+				return nil, fmt.Errorf("invalid source URL: %w", err)
 			}
+			req.Header.Set("User-Agent", "go-filter/1.0")
+
+			resp, err := client.Do(req)
+			if err != nil {
+				return nil, fmt.Errorf("fetch failed: %w", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode >= 400 {
+				return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+			}
+
+			content, err := io.ReadAll(io.LimitReader(resp.Body, maxSourceBytes))
+			if err != nil {
+				return nil, fmt.Errorf("read failed: %w", err)
+			}
+
+			tmpFile := origCache + ".tmp"
+			if writeErr := os.WriteFile(tmpFile, content, 0o644); writeErr == nil {
+				os.Rename(tmpFile, origCache)
+			}
+			return content, nil
+		})
+
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to fetch source %s: %v", source.URL, err), http.StatusBadGateway)
+			return
 		}
+		origContent = result.([]byte)
 	}
 
 	var out []string
 	var rejectedLines []string
 
-	// Process lines and separate valid and rejected ones
 	lines := bytes.Split(origContent, []byte("\n"))
 	for _, lineBytes := range lines {
 		originalLine := strings.TrimRight(string(lineBytes), "\r\n")
-		if originalLine == "" {
+		if originalLine == "" || strings.HasPrefix(originalLine, "#") {
 			continue
 		}
 
-		// NEW: Ignore comment lines that start with '#'
-		if strings.HasPrefix(originalLine, "#") {
-			continue
-		}
-
-		// Check length first
 		if len(originalLine) > maxURILength {
 			rejectedLines = append(rejectedLines, "# REASON: Line too long", originalLine)
 			continue
 		}
 
 		lowerLine := strings.ToLower(originalLine)
+		var processedLine, reason string
 
-		var processedLine string
-		var reason string
-		// Process only supported protocols
 		if strings.HasPrefix(lowerLine, "vless://") {
 			processedLine = processVLESS(originalLine)
 			reason = "Processing failed (invalid format, forbidden word, etc.)"
@@ -440,43 +450,32 @@ func handler(w http.ResponseWriter, r *http.Request) {
 			processedLine = processTrojan(originalLine)
 			reason = "Processing failed (invalid format, forbidden word, etc.)"
 		} else {
-			// Not a supported protocol
 			reason = "Unsupported protocol"
-			processedLine = "" // Explicitly set to empty
 		}
 
 		if processedLine != "" {
 			out = append(out, processedLine)
 		} else {
-			// Add to rejected if processing failed or protocol is unsupported
 			rejectedLines = append(rejectedLines, "# REASON: "+reason, originalLine)
 		}
 	}
 
-	// Write rejected lines to file atomically
 	if len(rejectedLines) > 0 {
 		rejectedContent := strings.Join(rejectedLines, "\n")
 		tmpRejectedFile := rejectedCache + ".tmp"
 		if err := os.WriteFile(tmpRejectedFile, []byte(rejectedContent), 0o644); err == nil {
-			if err := os.Rename(tmpRejectedFile, rejectedCache); err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to rename temp rejected cache file: %v\n", err)
-			}
+			os.Rename(tmpRejectedFile, rejectedCache)
 		}
 	} else {
-		// Only remove the rejected file if it exists and there are no rejected lines this time
 		if _, err := os.Stat(rejectedCache); err == nil {
-			if err := os.Remove(rejectedCache); err != nil {
-				// Log error, but don't fail the request
-				fmt.Fprintf(os.Stderr, "Failed to remove rejected cache file: %v\n", err)
-			}
+			os.Remove(rejectedCache)
 		}
 	}
 
-	// Profile header
 	sourceHost := "unknown"
-	if parsedSource, err := url.Parse(sourceURL); err == nil && parsedSource.Host != "" {
-		if host, _, err := net.SplitHostPort(parsedSource.Host); err == nil {
-			sourceHost = host
+	if parsedSource, err := url.Parse(source.URL); err == nil && parsedSource.Host != "" {
+		if h, _, err := net.SplitHostPort(parsedSource.Host); err == nil {
+			sourceHost = h
 		} else {
 			sourceHost = parsedSource.Host
 		}
@@ -494,16 +493,12 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	finalLines = append(finalLines, out...)
 	final := strings.Join(finalLines, "\n")
 
-	// Write modified content atomically
 	tmpFile := modCache + ".tmp"
 	if err := os.WriteFile(tmpFile, []byte(final), 0o644); err == nil {
-		if err := os.Rename(tmpFile, modCache); err != nil {
-			// Log error or handle it, modified file might be left if rename fails
-			fmt.Fprintf(os.Stderr, "Failed to rename temp modified cache file: %v\n", err)
-		}
+		os.Rename(tmpFile, modCache)
 	}
 
-	serveFile(w, r, []byte(final), sourceURL, id)
+	serveFile(w, r, []byte(final), source.URL, id)
 }
 
 func serveFile(w http.ResponseWriter, r *http.Request, content []byte, sourceURL, id string) {
@@ -518,8 +513,6 @@ func serveFile(w http.ResponseWriter, r *http.Request, content []byte, sourceURL
 	if !strings.HasSuffix(strings.ToLower(filename), ".txt") {
 		filename += ".txt"
 	}
-
-	// Ensure filename is safe by taking only the base name
 	filename = filepath.Base(filename)
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -528,7 +521,6 @@ func serveFile(w http.ResponseWriter, r *http.Request, content []byte, sourceURL
 	w.Write(content)
 }
 
-// isPathSafe checks if the path is within the allowed directory
 func isPathSafe(p, baseDir string) bool {
 	cleanPath := filepath.Clean(p)
 	rel, err := filepath.Rel(baseDir, cleanPath)
@@ -538,7 +530,8 @@ func isPathSafe(p, baseDir string) bool {
 	return !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".."
 }
 
-// === VLESS ===
+// === URI Processing ===
+
 func processVLESS(raw string) string {
 	if len(raw) > maxURILength {
 		return ""
@@ -548,11 +541,11 @@ func processVLESS(raw string) string {
 		return ""
 	}
 
-	uuid := u.User.Username() // Username can be UUID or arbitrary string
+	uuid := u.User.Username()
 	host := u.Hostname()
 	portStr := u.Port()
 
-	if portStr == "" {
+	if portStr == "" || uuid == "" || len(uuid) > maxIDLength {
 		return ""
 	}
 
@@ -561,16 +554,7 @@ func processVLESS(raw string) string {
 		return ""
 	}
 
-	// VLESS now allows arbitrary usernames, not just UUIDs
-	if uuid == "" || len(uuid) > maxIDLength {
-		return ""
-	}
-
-	if !isValidHost(host) {
-		return ""
-	}
-
-	if isForbiddenAnchor(u.Fragment) {
+	if !isValidHost(host) || isForbiddenAnchor(u.Fragment) {
 		return ""
 	}
 
@@ -598,7 +582,6 @@ func processVLESS(raw string) string {
 	return buf.String()
 }
 
-// === Shadowsocks ===
 func processSS(raw string) string {
 	if len(raw) > maxURILength {
 		return ""
@@ -629,10 +612,7 @@ func processSS(raw string) string {
 		return ""
 	}
 	cipher, password := parts[0], parts[1]
-	if cipher == "" || password == "" {
-		return ""
-	}
-	if !ssCipherRe.MatchString(cipher) {
+	if cipher == "" || password == "" || !ssCipherRe.MatchString(cipher) {
 		return ""
 	}
 
@@ -643,10 +623,7 @@ func processSS(raw string) string {
 	}
 
 	port, err := strconv.Atoi(portStr)
-	if err != nil || !isValidPort(port) {
-		return ""
-	}
-	if !isValidHost(host) {
+	if err != nil || !isValidPort(port) || !isValidHost(host) {
 		return ""
 	}
 
@@ -667,7 +644,6 @@ func processSS(raw string) string {
 	return buf.String()
 }
 
-// === Trojan ===
 func processTrojan(raw string) string {
 	if len(raw) > maxURILength {
 		return ""
@@ -689,10 +665,7 @@ func processTrojan(raw string) string {
 	}
 
 	port, err := strconv.Atoi(portStr)
-	if err != nil || !isValidPort(port) {
-		return ""
-	}
-	if !isValidHost(host) {
+	if err != nil || !isValidPort(port) || !isValidHost(host) {
 		return ""
 	}
 
@@ -717,16 +690,13 @@ func processTrojan(raw string) string {
 }
 
 // === Helpers ===
-func isValidUUID(uuid string) bool {
-	return uuid != "" && uuidRegex1.MatchString(uuid)
-}
 
 func isValidHost(host string) bool {
 	if host == "" {
 		return false
 	}
 	if strings.HasPrefix(host, "xn--") {
-		return false // block IDN
+		return false
 	}
 	if ip := net.ParseIP(host); ip != nil {
 		return true
@@ -769,14 +739,21 @@ func isOnlyEncryptionSecurityTypeGRPC(query string) bool {
 	return enc == "none" && sec == "none" && typ == "grpc"
 }
 
+func fullyDecode(s string) string {
+	for {
+		decoded, err := url.QueryUnescape(s)
+		if err != nil || decoded == s {
+			return s
+		}
+		s = decoded
+	}
+}
+
 func isForbiddenAnchor(fragment string) bool {
 	if fragment == "" {
 		return false
 	}
-	decoded, err := url.QueryUnescape(fragment)
-	if err != nil {
-		decoded = fragment
-	}
+	decoded := fullyDecode(fragment)
 	decodedLower := strings.ToLower(decoded)
 	for _, word := range badWords {
 		if word != "" && strings.Contains(decodedLower, word) {
