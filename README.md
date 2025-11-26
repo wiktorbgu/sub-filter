@@ -72,7 +72,7 @@ docker run -d \
   -v $(pwd)/config:/config:ro \
   -v $(pwd)/cache:/cache:rw \
   sub-filter \
-  8000 1800 ./config/sub.txt ./config/bad.txt ./config/uagent.txt
+  8000 1800
  ```
 
  или
@@ -84,5 +84,5 @@ docker run -d \
   -v $(pwd)/config:/config:ro,z \
   -v $(pwd)/cache:/cache:rw,z \
   sub-filter \
-  8000 1800 ./config/sub.txt ./config/bad.txt ./config/uagent.txt
+  8000 1800
   ```
