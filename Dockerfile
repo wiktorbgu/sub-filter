@@ -13,7 +13,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags '-w -s -extldflags "-static"' \
     -tags timetzdata \
-    -o filter .
+    -o filter main.go
 
 # Final stage
 FROM scratch
