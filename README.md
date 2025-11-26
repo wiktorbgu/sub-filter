@@ -62,5 +62,5 @@ docker run -d \
   -p 8080:8080  \
   -v ./sub.txt:/sub.txt:ro,z  -v ./bad.txt:/bad.txt:ro,z  -v ./uagent.txt:/uagent.txt:ro,z  \
   sub-filter \
-  8080 1800 /sub.txt /bad.txt /uagent.txt
+  8080 1800 ./sub.txt ./bad.txt ./uagent.txt
   ```
