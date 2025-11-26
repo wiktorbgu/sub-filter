@@ -41,7 +41,7 @@ http://localhost:8000/filter?id=1
  ```
 docker build -t sub-filter .
  ```
-#### Запуск с аргументами (порт 8080, TTL 300, файлы в рабочей директории)
+#### Запуск с аргументами (порт 8080, TTL 1800, файлы в рабочей директории)
 
  ```
 docker run -d \
@@ -53,3 +53,14 @@ docker run -d \
   sub-filter \
   8080 1800 ./sub.txt ./bad.txt ./uagent.txt
  ```
+
+ или
+
+  ```
+  podman run -d --replace \
+  --name sub-filter \
+  -p 8080:8080  \
+  -v ./sub.txt:/sub.txt:ro,z  -v ./bad.txt:/bad.txt:ro,z  -v ./uagent.txt:/uagent.txt:ro,z  \
+  sub-filter \
+  8080 1800 /sub.txt /bad.txt /uagent.txt
+  ```

@@ -18,6 +18,9 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 # Final stage
 FROM scratch
 
+# Копируем SSL-сертификаты для HTTPS
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+
 # Копируем бинарник
 COPY --from=builder /app/filter /filter
 
