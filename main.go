@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -162,123 +163,24 @@ func cleanupLimiters() {
 	}()
 }
 
-func main() {
-	if len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "Usage: %s <port> [cache_ttl_seconds] [sources_file] [bad_words_file] [uagent_file]\n", os.Args[0])
-		os.Exit(1)
-	}
+func decodeUserInfo(s string) ([]byte, error) {
+	isURLSafe := strings.ContainsAny(s, "-_")
+	isPadded := strings.HasSuffix(s, "=")
 
-	port := os.Args[1]
-	cacheTTLSeconds := 1800
-	if len(os.Args) >= 3 {
-		if sec, err := strconv.Atoi(os.Args[2]); err == nil && sec > 0 {
-			cacheTTLSeconds = sec
-		}
+	var enc *base64.Encoding
+	switch {
+	case isURLSafe && isPadded:
+		enc = base64.URLEncoding
+	case isURLSafe && !isPadded:
+		enc = base64.RawURLEncoding
+	case !isURLSafe && isPadded:
+		enc = base64.StdEncoding
+	case !isURLSafe && !isPadded:
+		enc = base64.RawStdEncoding
+	default:
+		enc = base64.RawURLEncoding
 	}
-	sourcesFile := defaultSourcesFile
-	if len(os.Args) >= 4 {
-		sourcesFile = os.Args[3]
-	}
-	badWordsFile := defaultBadWordsFile
-	if len(os.Args) >= 5 {
-		badWordsFile = os.Args[4]
-	}
-	uagentFile := defaultUAgentFile
-	if len(os.Args) >= 6 {
-		uagentFile = os.Args[5]
-	}
-
-	cacheTTL = time.Duration(cacheTTLSeconds) * time.Second
-	cacheDir = defaultCacheDir
-
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "Cannot create cache dir: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Load and validate sources with IP resolution
-	lines, err := loadTextFile(sourcesFile, nil)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to load sources: %v\n", err)
-		os.Exit(1)
-	}
-	sources = make(SourceMap)
-	validIndex := 1
-	for _, line := range lines {
-		if !isValidSourceURL(line) {
-			fmt.Fprintf(os.Stderr, "⚠️  Skipping invalid or unsafe source URL: %s\n", line)
-			continue
-		}
-
-		u, _ := url.Parse(line)
-		host := u.Hostname()
-		portStr := u.Port()
-		if portStr == "" {
-			if u.Scheme == "https" {
-				portStr = "443"
-			} else {
-				portStr = "80"
-			}
-		}
-
-		ips, err := net.LookupIP(host)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "⚠️  Failed to resolve host %s: %v\n", host, err)
-			continue
-		}
-
-		var allowedIP net.IP
-		for _, ip := range ips {
-			if isIPAllowed(ip) {
-				allowedIP = ip
-				break
-			}
-		}
-		if allowedIP == nil {
-			fmt.Fprintf(os.Stderr, "⚠️  No allowed public IP for host %s\n", host)
-			continue
-		}
-
-		sources[strconv.Itoa(validIndex)] = &SafeSource{
-			URL: line,
-			IP:  allowedIP,
-		}
-		validIndex++
-	}
-	if len(sources) == 0 {
-		fmt.Fprintf(os.Stderr, "No valid sources loaded. Exiting.\n")
-		os.Exit(1)
-	}
-
-	badWords, err = loadTextFile(badWordsFile, strings.ToLower)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to load bad words: %v (using empty list)\n", err)
-		badWords = []string{}
-	}
-
-	allowedUA, err = loadTextFile(uagentFile, nil)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Note: using built-in User-Agent rules only (no %s or error: %v)\n", uagentFile, err)
-		allowedUA = []string{}
-	}
-
-	cleanupLimiters()
-	http.HandleFunc("/filter", handler)
-	fmt.Printf("Server starting on :%s\n", port)
-	fmt.Printf("Valid sources loaded: %d\n", len(sources))
-	fmt.Printf("Bad words: %s\n", badWordsFile)
-	fmt.Printf("User-Agent file: %s\n", uagentFile)
-	fmt.Printf("Cache TTL: %ds\n", cacheTTLSeconds)
-
-	server := &http.Server{
-		Addr:         ":" + port,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-	}
-	if err := server.ListenAndServe(); err != nil {
-		fmt.Fprintf(os.Stderr, "Server failed: %v\n", err)
-		os.Exit(1)
-	}
+	return enc.DecodeString(s)
 }
 
 func isValidUserAgent(ua string) bool {
@@ -297,6 +199,324 @@ func isValidUserAgent(ua string) bool {
 		}
 	}
 	return false
+}
+
+func isValidHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	if strings.HasPrefix(host, "xn--") {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return true
+	}
+	return hostRegex.MatchString(strings.ToLower(host))
+}
+
+func isValidPort(port int) bool {
+	return port > 0 && port <= 65535
+}
+
+func fullyDecode(s string) string {
+	for {
+		decoded, err := url.QueryUnescape(s)
+		if err != nil || decoded == s {
+			return s
+		}
+		s = decoded
+	}
+}
+
+func isForbiddenAnchor(fragment string) bool {
+	if fragment == "" {
+		return false
+	}
+	decoded := fullyDecode(fragment)
+	decodedLower := strings.ToLower(decoded)
+	for _, word := range badWords {
+		if word != "" && strings.Contains(decodedLower, word) {
+			return true
+		}
+	}
+	return false
+}
+
+// === URI Processing ===
+
+func processVLESS(raw string) string {
+	if len(raw) > maxURILength {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "vless" {
+		return ""
+	}
+
+	uuid := u.User.Username()
+	host := u.Hostname()
+	portStr := u.Port()
+
+	if portStr == "" || uuid == "" || len(uuid) > maxIDLength {
+		return ""
+	}
+
+	port, err := strconv.Atoi(portStr)
+	if err != nil || !isValidPort(port) {
+		return ""
+	}
+
+	if !isValidHost(host) || isForbiddenAnchor(u.Fragment) {
+		return ""
+	}
+
+	queryVals := u.Query()
+	if queryVals.Get("allowInsecure") == "true" {
+		return ""
+	}
+
+	// Требуем SNI при использовании REALITY
+	if queryVals.Get("security") == "reality" && queryVals.Get("sni") == "" {
+		return ""
+	}
+
+	// Проверяем, что flow используется только с reality
+	flow := queryVals.Get("flow")
+	if flow != "" && queryVals.Get("security") != "reality" {
+		return ""
+	}
+
+	if alpnList := queryVals["alpn"]; len(alpnList) > 0 {
+		queryVals["alpn"] = alpnList[:1]
+	}
+
+	var buf strings.Builder
+	buf.WriteString("vless://")
+	buf.WriteString(uuid)
+	buf.WriteString("@")
+	buf.WriteString(net.JoinHostPort(host, portStr))
+	if u.Path != "" {
+		buf.WriteString(u.Path)
+	}
+	if len(queryVals) > 0 {
+		buf.WriteString("?")
+		buf.WriteString(queryVals.Encode())
+	}
+	if u.Fragment != "" {
+		buf.WriteString("#")
+		buf.WriteString(u.Fragment)
+	}
+	return buf.String()
+}
+
+func processVMess(raw string) string {
+	if len(raw) > maxURILength {
+		return ""
+	}
+
+	if !strings.HasPrefix(strings.ToLower(raw), "vmess://") {
+		return ""
+	}
+
+	b64 := strings.TrimPrefix(raw, "vmess://")
+	if b64 == "" {
+		return ""
+	}
+
+	decoded, err := decodeUserInfo(b64)
+	if err != nil {
+		return ""
+	}
+
+	var vm map[string]interface{}
+	if err := json.Unmarshal(decoded, &vm); err != nil {
+		return ""
+	}
+
+	ps, _ := vm["ps"].(string)
+	add, _ := vm["add"].(string)
+	port, ok := vm["port"].(float64)
+	if !ok {
+		return ""
+	}
+	id, _ := vm["id"].(string)
+
+	if add == "" || id == "" {
+		return ""
+	}
+
+	if int(port) <= 0 || int(port) > 65535 {
+		return ""
+	}
+
+	if !isValidHost(add) {
+		return ""
+	}
+
+	if isForbiddenAnchor(ps) {
+		return ""
+	}
+
+	net, _ := vm["net"].(string)
+	if net == "grpc" {
+		svc, _ := vm["serviceName"].(string)
+		if svc == "" {
+			return ""
+		}
+	}
+
+	tls, _ := vm["tls"].(string)
+	// Блокируем незашифрованный VMess (кроме gRPC, где иногда допустимо без TLS)
+	if net != "grpc" && tls != "tls" {
+		return ""
+	}
+
+	reencoded, err := json.Marshal(vm)
+	if err != nil {
+		return ""
+	}
+
+	finalB64 := base64.StdEncoding.EncodeToString(reencoded)
+	return "vmess://" + finalB64
+}
+
+func processTrojan(raw string) string {
+	if len(raw) > maxURILength {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "trojan" {
+		return ""
+	}
+
+	password := u.User.Username()
+	if password == "" {
+		return ""
+	}
+
+	host := u.Hostname()
+	portStr := u.Port()
+	if portStr == "" {
+		return ""
+	}
+
+	port, err := strconv.Atoi(portStr)
+	if err != nil || !isValidPort(port) || !isValidHost(host) {
+		return ""
+	}
+
+	if isForbiddenAnchor(u.Fragment) {
+		return ""
+	}
+
+	queryVals := u.Query()
+	/*if queryVals.Get("allowInsecure") == "true" {
+		return ""
+	}*/
+
+	if queryVals.Get("type") == "grpc" && queryVals.Get("serviceName") == "" {
+		return ""
+	}
+
+	var buf strings.Builder
+	buf.WriteString("trojan://")
+	buf.WriteString(password) // Исправлено: пароль НЕ экранируется
+	buf.WriteString("@")
+	buf.WriteString(net.JoinHostPort(host, portStr))
+	if len(queryVals) > 0 {
+		buf.WriteString("?")
+		buf.WriteString(queryVals.Encode())
+	}
+	if u.Fragment != "" {
+		buf.WriteString("#")
+		buf.WriteString(u.Fragment)
+	}
+	return buf.String()
+}
+
+func processSS(raw string) string {
+	if len(raw) > maxURILength {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "ss" {
+		return ""
+	}
+
+	userinfo := u.User.String()
+	if userinfo == "" || len(userinfo) > maxUserinfoLength {
+		return ""
+	}
+
+	decoded, decodeErr := decodeUserInfo(userinfo)
+	if decodeErr != nil {
+		return ""
+	}
+
+	parts := strings.SplitN(string(decoded), ":", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	cipher, password := parts[0], parts[1]
+	if cipher == "" || password == "" || !ssCipherRe.MatchString(cipher) {
+		return ""
+	}
+
+	host := u.Hostname()
+	portStr := u.Port()
+	if portStr == "" {
+		return ""
+	}
+
+	port, err := strconv.Atoi(portStr)
+	if err != nil || !isValidPort(port) || !isValidHost(host) {
+		return ""
+	}
+
+	if isForbiddenAnchor(u.Fragment) {
+		return ""
+	}
+
+	newUser := base64.RawURLEncoding.EncodeToString([]byte(cipher + ":" + password))
+	var buf strings.Builder
+	buf.WriteString("ss://")
+	buf.WriteString(newUser)
+	buf.WriteString("@")
+	buf.WriteString(net.JoinHostPort(host, portStr))
+	if u.Fragment != "" {
+		buf.WriteString("#")
+		buf.WriteString(u.Fragment)
+	}
+	return buf.String()
+}
+
+func isPathSafe(p, baseDir string) bool {
+	cleanPath := filepath.Clean(p)
+	rel, err := filepath.Rel(baseDir, cleanPath)
+	if err != nil {
+		return false
+	}
+	return !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".."
+}
+
+func serveFile(w http.ResponseWriter, r *http.Request, content []byte, sourceURL, id string) {
+	filename := "filtered_" + id + ".txt"
+	if u, err := url.Parse(sourceURL); err == nil {
+		base := path.Base(u.Path)
+		if base != "" && regexp.MustCompile(`^[a-zA-Z0-9._-]+\.txt$`).MatchString(base) {
+			filename = base
+		}
+	}
+	filename = regexp.MustCompile(`[^a-zA-Z0-9._-]`).ReplaceAllString(filename, "_")
+	if !strings.HasSuffix(strings.ToLower(filename), ".txt") {
+		filename += ".txt"
+	}
+	filename = filepath.Base(filename)
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	w.Header().Set("Content-Length", strconv.Itoa(len(content)))
+	w.Write(content)
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
@@ -438,18 +658,31 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		lowerLine := strings.ToLower(originalLine)
-		var processedLine, reason string
+		var processedLine string
+		var reason string
 
-		if strings.HasPrefix(lowerLine, "vless://") {
+		switch {
+		case strings.HasPrefix(lowerLine, "vless://"):
 			processedLine = processVLESS(originalLine)
-			reason = "Processing failed (invalid format, forbidden word, etc.)"
-		} else if strings.HasPrefix(lowerLine, "ss://") {
-			processedLine = processSS(originalLine)
-			reason = "Processing failed (invalid format, forbidden word, etc.)"
-		} else if strings.HasPrefix(lowerLine, "trojan://") {
+			if processedLine == "" {
+				reason = "Invalid or unsafe VLESS link"
+			}
+		case strings.HasPrefix(lowerLine, "vmess://"):
+			processedLine = processVMess(originalLine)
+			if processedLine == "" {
+				reason = "Invalid or unsafe VMess link"
+			}
+		case strings.HasPrefix(lowerLine, "trojan://"):
 			processedLine = processTrojan(originalLine)
-			reason = "Processing failed (invalid format, forbidden word, etc.)"
-		} else {
+			if processedLine == "" {
+				reason = "Invalid or unsafe Trojan link"
+			}
+		case strings.HasPrefix(lowerLine, "ss://"):
+			processedLine = processSS(originalLine)
+			if processedLine == "" {
+				reason = "Invalid or unsafe Shadowsocks link"
+			}
+		default:
 			reason = "Unsupported protocol"
 		}
 
@@ -501,264 +734,121 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	serveFile(w, r, []byte(final), source.URL, id)
 }
 
-func serveFile(w http.ResponseWriter, r *http.Request, content []byte, sourceURL, id string) {
-	filename := "filtered_" + id + ".txt"
-	if u, err := url.Parse(sourceURL); err == nil {
-		base := path.Base(u.Path)
-		if base != "" && regexp.MustCompile(`^[a-zA-Z0-9._-]+\.txt$`).MatchString(base) {
-			filename = base
+func main() {
+	if len(os.Args) < 2 {
+		fmt.Fprintf(os.Stderr, "Usage: %s <port> [cache_ttl_seconds] [sources_file] [bad_words_file] [uagent_file]\n", os.Args[0])
+		os.Exit(1)
+	}
+
+	port := os.Args[1]
+	cacheTTLSeconds := 1800
+	if len(os.Args) >= 3 {
+		if sec, err := strconv.Atoi(os.Args[2]); err == nil && sec > 0 {
+			cacheTTLSeconds = sec
 		}
 	}
-	filename = regexp.MustCompile(`[^a-zA-Z0-9._-]`).ReplaceAllString(filename, "_")
-	if !strings.HasSuffix(strings.ToLower(filename), ".txt") {
-		filename += ".txt"
+	sourcesFile := defaultSourcesFile
+	if len(os.Args) >= 4 {
+		sourcesFile = os.Args[3]
 	}
-	filename = filepath.Base(filename)
+	badWordsFile := defaultBadWordsFile
+	if len(os.Args) >= 5 {
+		badWordsFile = os.Args[4]
+	}
+	uagentFile := defaultUAgentFile
+	if len(os.Args) >= 6 {
+		uagentFile = os.Args[5]
+	}
 
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
-	w.Header().Set("Content-Length", strconv.Itoa(len(content)))
-	w.Write(content)
-}
+	cacheTTL = time.Duration(cacheTTLSeconds) * time.Second
+	cacheDir = defaultCacheDir
 
-func isPathSafe(p, baseDir string) bool {
-	cleanPath := filepath.Clean(p)
-	rel, err := filepath.Rel(baseDir, cleanPath)
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "Cannot create cache dir: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Load and validate sources with IP resolution
+	lines, err := loadTextFile(sourcesFile, nil)
 	if err != nil {
-		return false
+		fmt.Fprintf(os.Stderr, "Failed to load sources: %v\n", err)
+		os.Exit(1)
 	}
-	return !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".."
-}
-
-// === URI Processing ===
-
-func processVLESS(raw string) string {
-	if len(raw) > maxURILength {
-		return ""
-	}
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "vless" {
-		return ""
-	}
-
-	uuid := u.User.Username()
-	host := u.Hostname()
-	portStr := u.Port()
-
-	if portStr == "" || uuid == "" || len(uuid) > maxIDLength {
-		return ""
-	}
-
-	port, err := strconv.Atoi(portStr)
-	if err != nil || !isValidPort(port) {
-		return ""
-	}
-
-	if !isValidHost(host) || isForbiddenAnchor(u.Fragment) {
-		return ""
-	}
-
-	query := normalizeALPN(u.RawQuery)
-	if isOnlyEncryptionSecurityTypeGRPC(query) {
-		return ""
-	}
-
-	var buf strings.Builder
-	buf.WriteString("vless://")
-	buf.WriteString(url.PathEscape(uuid))
-	buf.WriteString("@")
-	buf.WriteString(net.JoinHostPort(host, portStr))
-	if u.Path != "" {
-		buf.WriteString(u.Path)
-	}
-	if query != "" {
-		buf.WriteString("?")
-		buf.WriteString(query)
-	}
-	if u.Fragment != "" {
-		buf.WriteString("#")
-		buf.WriteString(u.Fragment)
-	}
-	return buf.String()
-}
-
-func processSS(raw string) string {
-	if len(raw) > maxURILength {
-		return ""
-	}
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "ss" {
-		return ""
-	}
-
-	userinfo := u.User.String()
-	if userinfo == "" || len(userinfo) > maxUserinfoLength {
-		return ""
-	}
-
-	var decoded []byte
-	var decodeErr error
-	if strings.HasSuffix(userinfo, "=") {
-		decoded, decodeErr = base64.URLEncoding.DecodeString(userinfo)
-	} else {
-		decoded, decodeErr = base64.RawURLEncoding.DecodeString(userinfo)
-	}
-	if decodeErr != nil {
-		return ""
-	}
-
-	parts := strings.SplitN(string(decoded), ":", 2)
-	if len(parts) != 2 {
-		return ""
-	}
-	cipher, password := parts[0], parts[1]
-	if cipher == "" || password == "" || !ssCipherRe.MatchString(cipher) {
-		return ""
-	}
-
-	host := u.Hostname()
-	portStr := u.Port()
-	if portStr == "" {
-		return ""
-	}
-
-	port, err := strconv.Atoi(portStr)
-	if err != nil || !isValidPort(port) || !isValidHost(host) {
-		return ""
-	}
-
-	if isForbiddenAnchor(u.Fragment) {
-		return ""
-	}
-
-	newUser := base64.RawURLEncoding.EncodeToString([]byte(cipher + ":" + password))
-	var buf strings.Builder
-	buf.WriteString("ss://")
-	buf.WriteString(newUser)
-	buf.WriteString("@")
-	buf.WriteString(net.JoinHostPort(host, portStr))
-	if u.Fragment != "" {
-		buf.WriteString("#")
-		buf.WriteString(u.Fragment)
-	}
-	return buf.String()
-}
-
-func processTrojan(raw string) string {
-	if len(raw) > maxURILength {
-		return ""
-	}
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "trojan" {
-		return ""
-	}
-
-	password := u.User.Username()
-	if password == "" {
-		return ""
-	}
-
-	host := u.Hostname()
-	portStr := u.Port()
-	if portStr == "" {
-		return ""
-	}
-
-	port, err := strconv.Atoi(portStr)
-	if err != nil || !isValidPort(port) || !isValidHost(host) {
-		return ""
-	}
-
-	if isForbiddenAnchor(u.Fragment) {
-		return ""
-	}
-
-	var buf strings.Builder
-	buf.WriteString("trojan://")
-	buf.WriteString(url.PathEscape(password))
-	buf.WriteString("@")
-	buf.WriteString(net.JoinHostPort(host, portStr))
-	if u.RawQuery != "" {
-		buf.WriteString("?")
-		buf.WriteString(u.RawQuery)
-	}
-	if u.Fragment != "" {
-		buf.WriteString("#")
-		buf.WriteString(u.Fragment)
-	}
-	return buf.String()
-}
-
-// === Helpers ===
-
-func isValidHost(host string) bool {
-	if host == "" {
-		return false
-	}
-	if strings.HasPrefix(host, "xn--") {
-		return false
-	}
-	if ip := net.ParseIP(host); ip != nil {
-		return true
-	}
-	return hostRegex.MatchString(strings.ToLower(host))
-}
-
-func isValidPort(port int) bool {
-	return port > 0 && port <= 65535
-}
-
-func normalizeALPN(query string) string {
-	if query == "" {
-		return ""
-	}
-	vals, err := url.ParseQuery(query)
-	if err != nil {
-		return query
-	}
-	if alpnList := vals["alpn"]; len(alpnList) > 0 {
-		vals["alpn"] = alpnList[:1]
-	}
-	return vals.Encode()
-}
-
-func isOnlyEncryptionSecurityTypeGRPC(query string) bool {
-	if query == "" {
-		return false
-	}
-	vals, err := url.ParseQuery(query)
-	if err != nil {
-		return false
-	}
-	if len(vals) != 3 {
-		return false
-	}
-	enc := strings.ToLower(vals.Get("encryption"))
-	sec := strings.ToLower(vals.Get("security"))
-	typ := strings.ToLower(vals.Get("type"))
-	return enc == "none" && sec == "none" && typ == "grpc"
-}
-
-func fullyDecode(s string) string {
-	for {
-		decoded, err := url.QueryUnescape(s)
-		if err != nil || decoded == s {
-			return s
+	sources = make(SourceMap)
+	validIndex := 1
+	for _, line := range lines {
+		if !isValidSourceURL(line) {
+			fmt.Fprintf(os.Stderr, "⚠️  Skipping invalid or unsafe source URL: %s\n", line)
+			continue
 		}
-		s = decoded
-	}
-}
 
-func isForbiddenAnchor(fragment string) bool {
-	if fragment == "" {
-		return false
-	}
-	decoded := fullyDecode(fragment)
-	decodedLower := strings.ToLower(decoded)
-	for _, word := range badWords {
-		if word != "" && strings.Contains(decodedLower, word) {
-			return true
+		u, _ := url.Parse(line)
+		host := u.Hostname()
+		portStr := u.Port()
+		if portStr == "" {
+			if u.Scheme == "https" {
+				portStr = "443"
+			} else {
+				portStr = "80"
+			}
 		}
+
+		ips, err := net.LookupIP(host)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "⚠️  Failed to resolve host %s: %v\n", host, err)
+			continue
+		}
+
+		var allowedIP net.IP
+		for _, ip := range ips {
+			if isIPAllowed(ip) {
+				allowedIP = ip
+				break
+			}
+		}
+		if allowedIP == nil {
+			fmt.Fprintf(os.Stderr, "⚠️  No allowed public IP for host %s\n", host)
+			continue
+		}
+
+		sources[strconv.Itoa(validIndex)] = &SafeSource{
+			URL: line,
+			IP:  allowedIP,
+		}
+		validIndex++
 	}
-	return false
+	if len(sources) == 0 {
+		fmt.Fprintf(os.Stderr, "No valid sources loaded. Exiting.\n")
+		os.Exit(1)
+	}
+
+	badWords, err = loadTextFile(badWordsFile, strings.ToLower)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to load bad words: %v (using empty list)\n", err)
+		badWords = []string{}
+	}
+
+	allowedUA, err = loadTextFile(uagentFile, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Note: using built-in User-Agent rules only (no %s or error: %v)\n", uagentFile, err)
+		allowedUA = []string{}
+	}
+
+	cleanupLimiters()
+	http.HandleFunc("/filter", handler)
+	fmt.Printf("Server starting on :%s\n", port)
+	fmt.Printf("Valid sources loaded: %d\n", len(sources))
+	fmt.Printf("Bad words: %s\n", badWordsFile)
+	fmt.Printf("User-Agent file: %s\n", uagentFile)
+	fmt.Printf("Cache TTL: %ds\n", cacheTTLSeconds)
+
+	server := &http.Server{
+		Addr:         ":" + port,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+	}
+	if err := server.ListenAndServe(); err != nil {
+		fmt.Fprintf(os.Stderr, "Server failed: %v\n", err)
+		os.Exit(1)
+	}
 }
