@@ -275,6 +275,11 @@ func processVLESS(raw string) string {
 		return ""
 	}
 
+	// 🔒 Запрет VLESS без шифрования (security=none)
+	if queryVals.Get("security") == "none" {
+		return ""
+	}
+
 	// Требуем SNI при использовании REALITY
 	if queryVals.Get("security") == "reality" && queryVals.Get("sni") == "" {
 		return ""
