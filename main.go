@@ -1,3 +1,5 @@
+// Пакет main реализует HTTP-сервер для фильтрации прокси-подписок.
+// Поддерживает протоколы: VLESS, VMess, Trojan, Shadowsocks.
 package main
 
 import (
@@ -25,47 +27,72 @@ import (
 	"golang.org/x/time/rate"
 )
 
+// === Константы конфигурации ===
+
 const (
-	defaultSourcesFile  = "./config/sub.txt"
-	defaultBadWordsFile = "./config/bad.txt"
-	defaultUAgentFile   = "./config/uagent.txt"
-	defaultCacheDir     = "./cache"
-	maxIDLength         = 64
-	maxURILength        = 4096
-	maxUserinfoLength   = 1024
-	maxSourceBytes      = 10 * 1024 * 1024 // 10 MB
+	defaultSourcesFile  = "./config/sub.txt"    // Файл со списком URL подписок
+	defaultBadWordsFile = "./config/bad.txt"    // Файл с запрещёнными словами
+	defaultUAgentFile   = "./config/uagent.txt" // Файл с разрешёнными User-Agent
+	defaultCacheDir     = "./cache"             // Директория для кэша
+	maxIDLength         = 64                    // Макс. длина идентификатора источника
+	maxURILength        = 4096                  // Макс. длина одной строки подписки
+	maxUserinfoLength   = 1024                  // Макс. длина userinfo в URI
+	maxSourceBytes      = 10 * 1024 * 1024      // Макс. размер скачиваемой подписки (10 МБ)
+
+	// Параметры rate limiting
+	limiterBurst    = 5                      // Макс. число запросов за раз
+	limiterEvery    = 100 * time.Millisecond // Интервал пополнения лимита
+	cleanupInterval = 2 * time.Minute        // Интервал очистки старых лимитёров
+	inactiveTimeout = 30 * time.Minute       // Время неактивности для удаления лимитёра
 )
 
+// SafeSource представляет проверенный источник подписки с зарезолвленным публичным IP.
 type SafeSource struct {
-	URL string
-	IP  net.IP
+	URL string // Исходный URL подписки
+	IP  net.IP // Публичный IP, на который будет выполнен фетч
 }
 
+// SourceMap — карта источников, где ключ — строковый ID (1, 2, 3...).
 type SourceMap map[string]*SafeSource
 
+// === Глобальные переменные конфигурации ===
+
 var (
-	cacheDir   string
-	cacheTTL   time.Duration
-	sources    SourceMap
-	badWords   []string
-	allowedUA  []string
-	validIDRe  = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
-	ssCipherRe = regexp.MustCompile(`^[a-zA-Z0-9_+-]+$`)
-	hostRegex  = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
-
-	// Rate limiting with TTL
-	ipLimiter    = make(map[string]*rate.Limiter)
-	ipLastSeen   = make(map[string]time.Time)
-	limiterMutex sync.RWMutex
-
-	// Deduplicate concurrent fetches
-	fetchGroup singleflight.Group
-
-	builtinAllowedPrefixes = []string{"clash", "happ"}
+	cacheDir  string        // Директория кэша (устанавливается при запуске)
+	cacheTTL  time.Duration // Время жизни кэша
+	sources   SourceMap     // Валидированные источники подписок
+	badWords  []string      // Список запрещённых слов для фильтрации
+	allowedUA []string      // Список разрешённых User-Agent
 )
 
+// === Регулярные выражения для валидации ===
+
+var (
+	validIDRe  = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)                                                   // Валидный ID источника
+	ssCipherRe = regexp.MustCompile(`^[a-zA-Z0-9_+-]+$`)                                                 // Валидный шифр Shadowsocks
+	hostRegex  = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]*[a-z0-9])?$`) // Валидный домен
+)
+
+// === Rate limiting по IP-адресам ===
+
+var (
+	ipLimiter    = make(map[string]*rate.Limiter) // Лимитёры по IP
+	ipLastSeen   = make(map[string]time.Time)     // Последнее обращение по IP
+	limiterMutex sync.RWMutex                     // Мьютекс для безопасного доступа
+)
+
+// === HTTP-фетчер с дедупликацией ===
+
+var (
+	fetchGroup             singleflight.Group          // Группа для дедупликации одновременных фетчей
+	builtinAllowedPrefixes = []string{"clash", "happ"} // Встроенные разрешённые User-Agent-префиксы
+)
+
+// LineProcessor — тип функции для обработки строк при загрузке файлов.
 type LineProcessor func(string) string
 
+// loadTextFile загружает текстовый файл, пропуская пустые строки и комментарии.
+// Применяет опциональный процессор к каждой строке.
 func loadTextFile(filename string, processor LineProcessor) ([]string, error) {
 	file, err := os.Open(filename)
 	if err != nil {
@@ -74,6 +101,7 @@ func loadTextFile(filename string, processor LineProcessor) ([]string, error) {
 	defer file.Close()
 
 	reader := bufio.NewReader(file)
+	// Пропускаем BOM, если есть
 	if b, err := reader.Peek(3); err == nil && bytes.Equal(b, []byte{0xEF, 0xBB, 0xBF}) {
 		reader.Discard(3)
 	}
@@ -93,6 +121,16 @@ func loadTextFile(filename string, processor LineProcessor) ([]string, error) {
 	return result, scanner.Err()
 }
 
+// getDefaultPort возвращает стандартный порт для схемы.
+func getDefaultPort(scheme string) string {
+	if scheme == "https" {
+		return "443"
+	}
+	return "80"
+}
+
+// isValidSourceURL проверяет, что URL подписки безопасен для фетча.
+// Запрещает localhost, приватные IP, loopback и специальные домены.
 func isValidSourceURL(rawURL string) bool {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -114,26 +152,23 @@ func isValidSourceURL(rawURL string) bool {
 	if strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".internal") {
 		return false
 	}
-	if strings.HasPrefix(host, "xn--") {
+	if strings.HasPrefix(host, "xn--") { // Punycode
 		return false
 	}
 	if ip := net.ParseIP(host); ip != nil {
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
-			ip.IsLinkLocalMulticast() || ip.IsMulticast() {
-			return false
-		}
+		// Используем централизованную проверку IP
+		return isIPAllowed(ip)
 	}
 	return true
 }
 
+// isIPAllowed проверяет, что IP-адрес является публичным и пригодным для фетча.
 func isIPAllowed(ip net.IP) bool {
-	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() || ip.IsMulticast() {
-		return false
-	}
-	return true
+	return !(ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsMulticast())
 }
 
+// getLimiter возвращает или создаёт rate.Limiter для IP-адреса.
 func getLimiter(ip string) *rate.Limiter {
 	limiterMutex.Lock()
 	defer limiterMutex.Unlock()
@@ -141,19 +176,20 @@ func getLimiter(ip string) *rate.Limiter {
 	if limiter, exists := ipLimiter[ip]; exists {
 		return limiter
 	}
-	limiter := rate.NewLimiter(rate.Every(100*time.Millisecond), 5)
+	limiter := rate.NewLimiter(rate.Every(limiterEvery), limiterBurst)
 	ipLimiter[ip] = limiter
 	return limiter
 }
 
+// cleanupLimiters запускает фоновую горутину для удаления неактивных лимитёров.
 func cleanupLimiters() {
-	ticker := time.NewTicker(2 * time.Minute)
+	ticker := time.NewTicker(cleanupInterval)
 	go func() {
 		for range ticker.C {
 			limiterMutex.Lock()
 			now := time.Now()
 			for ip, last := range ipLastSeen {
-				if now.Sub(last) > 30*time.Minute {
+				if now.Sub(last) > inactiveTimeout {
 					delete(ipLimiter, ip)
 					delete(ipLastSeen, ip)
 				}
@@ -163,6 +199,8 @@ func cleanupLimiters() {
 	}()
 }
 
+// decodeUserInfo декодирует строку с учётом всех 4 вариантов base64 (Std, Raw, URL-safe).
+// Аналог utils.AutoDecode из эталонного парсера.
 func decodeUserInfo(s string) ([]byte, error) {
 	isURLSafe := strings.ContainsAny(s, "-_")
 	isPadded := strings.HasSuffix(s, "=")
@@ -183,6 +221,8 @@ func decodeUserInfo(s string) ([]byte, error) {
 	return enc.DecodeString(s)
 }
 
+// isValidUserAgent проверяет, что User-Agent разрешён.
+// Поддерживает встроенные префиксы и внешний список.
 func isValidUserAgent(ua string) bool {
 	lowerUA := strings.ToLower(ua)
 	for _, prefix := range builtinAllowedPrefixes {
@@ -191,16 +231,14 @@ func isValidUserAgent(ua string) bool {
 		}
 	}
 	for _, allowed := range allowedUA {
-		if allowed == "" {
-			continue
-		}
-		if strings.Contains(lowerUA, strings.ToLower(allowed)) {
+		if allowed != "" && strings.Contains(lowerUA, strings.ToLower(allowed)) {
 			return true
 		}
 	}
 	return false
 }
 
+// isValidHost проверяет корректность хоста (домен или публичный IP).
 func isValidHost(host string) bool {
 	if host == "" {
 		return false
@@ -214,10 +252,13 @@ func isValidHost(host string) bool {
 	return hostRegex.MatchString(strings.ToLower(host))
 }
 
+// isValidPort проверяет, что порт в допустимом диапазоне.
 func isValidPort(port int) bool {
 	return port > 0 && port <= 65535
 }
 
+// fullyDecode рекурсивно декодирует URL-escape-последовательности.
+// Используется для проверки запрещённых слов в названиях.
 func fullyDecode(s string) string {
 	for {
 		decoded, err := url.QueryUnescape(s)
@@ -228,6 +269,8 @@ func fullyDecode(s string) string {
 	}
 }
 
+// isForbiddenAnchor проверяет, содержит ли fragment (название сервера) запрещённые слова.
+// Поддерживает URL-escaped имена.
 func isForbiddenAnchor(fragment string) bool {
 	if fragment == "" {
 		return false
@@ -242,70 +285,98 @@ func isForbiddenAnchor(fragment string) bool {
 	return false
 }
 
-// === URI Processing ===
+// parseHostPort извлекает и проверяет хост и порт из URL.
+// Возвращает хост, порт и флаг успеха.
+func parseHostPort(u *url.URL) (string, int, bool) {
+	host := u.Hostname()
+	portStr := u.Port()
+	if portStr == "" {
+		return "", 0, false
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || !isValidPort(port) || !isValidHost(host) {
+		return "", 0, false
+	}
+	return host, port, true
+}
 
-func processVLESS(raw string) string {
-	if len(raw) > maxURILength {
+// isSafeVLESSConfig проверяет безопасность конфигурации VLESS.
+// Блокирует: allowInsecure, security=none, reality без sni, flow без reality, gRPC без serviceName.
+func isSafeVLESSConfig(q url.Values) bool {
+	if q.Get("allowInsecure") == "true" {
+		return false
+	}
+	if q.Get("security") == "none" {
+		return false
+	}
+	if q.Get("security") == "reality" && q.Get("sni") == "" {
+		return false
+	}
+	flow := q.Get("flow")
+	if flow != "" && q.Get("security") != "reality" {
+		return false
+	}
+	if q.Get("type") == "grpc" && q.Get("serviceName") == "" {
+		return false
+	}
+	return true
+}
+
+// isSafeTrojanConfig проверяет безопасность конфигурации Trojan.
+// Разрешает allowInsecure (осознанное решение), но блокирует gRPC без serviceName.
+func isSafeTrojanConfig(q url.Values) bool {
+	if q.Get("type") == "grpc" && q.Get("serviceName") == "" {
+		return false
+	}
+	return true // allowInsecure разрешён
+}
+
+// === Обработка отдельных протоколов ===
+
+// processVLESS обрабатывает VLESS-ссылку: валидирует, фильтрует, пересобирает.
+func processVLESS(s string) string {
+	if len(s) > maxURILength {
 		return ""
 	}
-	u, err := url.Parse(raw)
+	u, err := url.Parse(s)
 	if err != nil || u.Scheme != "vless" {
 		return ""
 	}
 
 	uuid := u.User.Username()
-	host := u.Hostname()
-	portStr := u.Port()
-
-	if portStr == "" || uuid == "" || len(uuid) > maxIDLength {
+	if uuid == "" || len(uuid) > maxIDLength {
 		return ""
 	}
 
-	port, err := strconv.Atoi(portStr)
-	if err != nil || !isValidPort(port) {
+	host, port, ok := parseHostPort(u)
+	if !ok {
 		return ""
 	}
 
-	if !isValidHost(host) || isForbiddenAnchor(u.Fragment) {
+	if isForbiddenAnchor(u.Fragment) {
 		return ""
 	}
 
-	queryVals := u.Query()
-	if queryVals.Get("allowInsecure") == "true" {
+	if !isSafeVLESSConfig(u.Query()) {
 		return ""
 	}
 
-	// 🔒 Запрет VLESS без шифрования (security=none)
-	if queryVals.Get("security") == "none" {
-		return ""
-	}
-
-	// Требуем SNI при использовании REALITY
-	if queryVals.Get("security") == "reality" && queryVals.Get("sni") == "" {
-		return ""
-	}
-
-	// Проверяем, что flow используется только с reality
-	flow := queryVals.Get("flow")
-	if flow != "" && queryVals.Get("security") != "reality" {
-		return ""
-	}
-
-	if alpnList := queryVals["alpn"]; len(alpnList) > 0 {
-		queryVals["alpn"] = alpnList[:1]
+	q := u.Query()
+	if alpnList := q["alpn"]; len(alpnList) > 0 {
+		q["alpn"] = alpnList[:1] // Оставляем только первый ALPN
 	}
 
 	var buf strings.Builder
 	buf.WriteString("vless://")
-	buf.WriteString(uuid)
+	buf.WriteString(uuid) // UUID не экранируется повторно
 	buf.WriteString("@")
-	buf.WriteString(net.JoinHostPort(host, portStr))
+	buf.WriteString(net.JoinHostPort(host, strconv.Itoa(port)))
 	if u.Path != "" {
 		buf.WriteString(u.Path)
 	}
-	if len(queryVals) > 0 {
+	if len(q) > 0 {
 		buf.WriteString("?")
-		buf.WriteString(queryVals.Encode())
+		buf.WriteString(q.Encode())
 	}
 	if u.Fragment != "" {
 		buf.WriteString("#")
@@ -314,16 +385,17 @@ func processVLESS(raw string) string {
 	return buf.String()
 }
 
-func processVMess(raw string) string {
-	if len(raw) > maxURILength {
+// processVMess обрабатывает VMess-ссылку (base64-encoded JSON).
+func processVMess(s string) string {
+	if len(s) > maxURILength {
 		return ""
 	}
 
-	if !strings.HasPrefix(strings.ToLower(raw), "vmess://") {
+	if !strings.HasPrefix(strings.ToLower(s), "vmess://") {
 		return ""
 	}
 
-	b64 := strings.TrimPrefix(raw, "vmess://")
+	b64 := strings.TrimPrefix(s, "vmess://")
 	if b64 == "" {
 		return ""
 	}
@@ -362,8 +434,8 @@ func processVMess(raw string) string {
 		return ""
 	}
 
-	net, _ := vm["net"].(string)
-	if net == "grpc" {
+	netType, _ := vm["net"].(string)
+	if netType == "grpc" {
 		svc, _ := vm["serviceName"].(string)
 		if svc == "" {
 			return ""
@@ -371,8 +443,7 @@ func processVMess(raw string) string {
 	}
 
 	tls, _ := vm["tls"].(string)
-	// Блокируем незашифрованный VMess (кроме gRPC, где иногда допустимо без TLS)
-	if net != "grpc" && tls != "tls" {
+	if netType != "grpc" && tls != "tls" {
 		return ""
 	}
 
@@ -385,11 +456,12 @@ func processVMess(raw string) string {
 	return "vmess://" + finalB64
 }
 
-func processTrojan(raw string) string {
-	if len(raw) > maxURILength {
+// processTrojan обрабатывает Trojan-ссылку.
+func processTrojan(s string) string {
+	if len(s) > maxURILength {
 		return ""
 	}
-	u, err := url.Parse(raw)
+	u, err := url.Parse(s)
 	if err != nil || u.Scheme != "trojan" {
 		return ""
 	}
@@ -399,14 +471,8 @@ func processTrojan(raw string) string {
 		return ""
 	}
 
-	host := u.Hostname()
-	portStr := u.Port()
-	if portStr == "" {
-		return ""
-	}
-
-	port, err := strconv.Atoi(portStr)
-	if err != nil || !isValidPort(port) || !isValidHost(host) {
+	host, port, ok := parseHostPort(u)
+	if !ok {
 		return ""
 	}
 
@@ -414,23 +480,19 @@ func processTrojan(raw string) string {
 		return ""
 	}
 
-	queryVals := u.Query()
-	/*if queryVals.Get("allowInsecure") == "true" {
-		return ""
-	}*/
-
-	if queryVals.Get("type") == "grpc" && queryVals.Get("serviceName") == "" {
+	if !isSafeTrojanConfig(u.Query()) {
 		return ""
 	}
 
 	var buf strings.Builder
 	buf.WriteString("trojan://")
-	buf.WriteString(password) // Исправлено: пароль НЕ экранируется
+	buf.WriteString(password) // Пароль не экранируется — он уже в правильной кодировке
 	buf.WriteString("@")
-	buf.WriteString(net.JoinHostPort(host, portStr))
-	if len(queryVals) > 0 {
+	buf.WriteString(net.JoinHostPort(host, strconv.Itoa(port)))
+	q := u.Query()
+	if len(q) > 0 {
 		buf.WriteString("?")
-		buf.WriteString(queryVals.Encode())
+		buf.WriteString(q.Encode())
 	}
 	if u.Fragment != "" {
 		buf.WriteString("#")
@@ -439,11 +501,12 @@ func processTrojan(raw string) string {
 	return buf.String()
 }
 
-func processSS(raw string) string {
-	if len(raw) > maxURILength {
+// processSS обрабатывает Shadowsocks-ссылку.
+func processSS(s string) string {
+	if len(s) > maxURILength {
 		return ""
 	}
-	u, err := url.Parse(raw)
+	u, err := url.Parse(s)
 	if err != nil || u.Scheme != "ss" {
 		return ""
 	}
@@ -467,14 +530,8 @@ func processSS(raw string) string {
 		return ""
 	}
 
-	host := u.Hostname()
-	portStr := u.Port()
-	if portStr == "" {
-		return ""
-	}
-
-	port, err := strconv.Atoi(portStr)
-	if err != nil || !isValidPort(port) || !isValidHost(host) {
+	host, port, ok := parseHostPort(u)
+	if !ok {
 		return ""
 	}
 
@@ -487,7 +544,7 @@ func processSS(raw string) string {
 	buf.WriteString("ss://")
 	buf.WriteString(newUser)
 	buf.WriteString("@")
-	buf.WriteString(net.JoinHostPort(host, portStr))
+	buf.WriteString(net.JoinHostPort(host, strconv.Itoa(port)))
 	if u.Fragment != "" {
 		buf.WriteString("#")
 		buf.WriteString(u.Fragment)
@@ -495,6 +552,7 @@ func processSS(raw string) string {
 	return buf.String()
 }
 
+// isPathSafe проверяет, что путь находится внутри базовой директории (защита от path traversal).
 func isPathSafe(p, baseDir string) bool {
 	cleanPath := filepath.Clean(p)
 	rel, err := filepath.Rel(baseDir, cleanPath)
@@ -504,6 +562,7 @@ func isPathSafe(p, baseDir string) bool {
 	return !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".."
 }
 
+// serveFile отдаёт подписку как attachment с правильным Content-Disposition.
 func serveFile(w http.ResponseWriter, r *http.Request, content []byte, sourceURL, id string) {
 	filename := "filtered_" + id + ".txt"
 	if u, err := url.Parse(sourceURL); err == nil {
@@ -524,6 +583,7 @@ func serveFile(w http.ResponseWriter, r *http.Request, content []byte, sourceURL
 	w.Write(content)
 }
 
+// handler обрабатывает HTTP-запрос /filter?id=...
 func handler(w http.ResponseWriter, r *http.Request) {
 	clientIP, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -572,6 +632,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Возвращаем из кэша, если не устарел
 	if info, err := os.Stat(modCache); err == nil && time.Since(info.ModTime()) <= cacheTTL {
 		if content, err := os.ReadFile(modCache); err == nil {
 			serveFile(w, r, content, source.URL, id)
@@ -579,6 +640,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Пытаемся загрузить исходную подписку из кэша
 	var origContent []byte
 	if info, err := os.Stat(origCache); err == nil && time.Since(info.ModTime()) <= cacheTTL {
 		if content, err := os.ReadFile(origCache); err == nil {
@@ -586,14 +648,11 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Если нет в кэше — фетчим
 	if origContent == nil {
 		_, portStr, _ := net.SplitHostPort(parsedSource.Host)
 		if portStr == "" {
-			if parsedSource.Scheme == "https" {
-				portStr = "443"
-			} else {
-				portStr = "80"
-			}
+			portStr = getDefaultPort(parsedSource.Scheme)
 		}
 
 		client := &http.Client{
@@ -647,6 +706,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		origContent = result.([]byte)
 	}
 
+	// Обрабатываем каждую строку подписки
 	var out []string
 	var rejectedLines []string
 
@@ -698,6 +758,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Сохраняем rejected-файл или удаляем, если пуст
 	if len(rejectedLines) > 0 {
 		rejectedContent := strings.Join(rejectedLines, "\n")
 		tmpRejectedFile := rejectedCache + ".tmp"
@@ -705,18 +766,15 @@ func handler(w http.ResponseWriter, r *http.Request) {
 			os.Rename(tmpRejectedFile, rejectedCache)
 		}
 	} else {
-		if _, err := os.Stat(rejectedCache); err == nil {
-			os.Remove(rejectedCache)
-		}
+		os.Remove(rejectedCache) // Игнорируем ошибку "файл не найден"
 	}
 
+	// Формируем итоговую подписку
 	sourceHost := "unknown"
-	if parsedSource, err := url.Parse(source.URL); err == nil && parsedSource.Host != "" {
-		if h, _, err := net.SplitHostPort(parsedSource.Host); err == nil {
-			sourceHost = h
-		} else {
-			sourceHost = parsedSource.Host
-		}
+	if h, _, err := net.SplitHostPort(parsedSource.Host); err == nil {
+		sourceHost = h
+	} else {
+		sourceHost = parsedSource.Host
 	}
 
 	updateInterval := int(cacheTTL.Seconds() / 3600)
@@ -739,6 +797,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	serveFile(w, r, []byte(final), source.URL, id)
 }
 
+// main — точка входа программы.
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintf(os.Stderr, "Usage: %s <port> [cache_ttl_seconds] [sources_file] [bad_words_file] [uagent_file]\n", os.Args[0])
@@ -773,7 +832,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Load and validate sources with IP resolution
+	// Загружаем и валидируем источники
 	lines, err := loadTextFile(sourcesFile, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load sources: %v\n", err)
@@ -791,11 +850,7 @@ func main() {
 		host := u.Hostname()
 		portStr := u.Port()
 		if portStr == "" {
-			if u.Scheme == "https" {
-				portStr = "443"
-			} else {
-				portStr = "80"
-			}
+			portStr = getDefaultPort(u.Scheme)
 		}
 
 		ips, err := net.LookupIP(host)
@@ -827,19 +882,24 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Загружаем bad words
 	badWords, err = loadTextFile(badWordsFile, strings.ToLower)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to load bad words: %v (using empty list)\n", err)
 		badWords = []string{}
 	}
 
+	// Загружаем разрешённые User-Agent
 	allowedUA, err = loadTextFile(uagentFile, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Note: using built-in User-Agent rules only (no %s or error: %v)\n", uagentFile, err)
 		allowedUA = []string{}
 	}
 
+	// Запускаем очистку лимитёров
 	cleanupLimiters()
+
+	// Регистрируем обработчик и стартуем сервер
 	http.HandleFunc("/filter", handler)
 	fmt.Printf("Server starting on :%s\n", port)
 	fmt.Printf("Valid sources loaded: %d\n", len(sources))
