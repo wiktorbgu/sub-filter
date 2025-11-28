@@ -272,20 +272,20 @@ func fullyDecode(s string) string {
 	}
 }
 
-// isForbiddenAnchor проверяет, содержит ли fragment (название сервера) запрещённые слова.
-// Поддерживает URL-escaped имена.
-func isForbiddenAnchor(fragment string) bool {
+// checkBadWordsInName проверяет, содержит ли fragment (название сервера) запрещённые слова.
+// Возвращает true и детализированную причину, если найдено.
+func checkBadWordsInName(fragment string) (bool, string) {
 	if fragment == "" {
-		return false
+		return false, ""
 	}
 	decoded := fullyDecode(fragment)
 	decodedLower := strings.ToLower(decoded)
 	for _, word := range badWords {
 		if word != "" && strings.Contains(decodedLower, word) {
-			return true
+			return true, fmt.Sprintf("bad word in name: %q", word)
 		}
 	}
-	return false
+	return false, ""
 }
 
 // parseHostPort извлекает и проверяет хост и порт из URL.
@@ -305,63 +305,66 @@ func parseHostPort(u *url.URL) (string, int, bool) {
 
 // isSafeVLESSConfig проверяет безопасность конфигурации VLESS.
 // Блокирует: allowInsecure, security=none, reality без sni, flow без reality, gRPC без serviceName.
-func isSafeVLESSConfig(q url.Values) bool {
+// Возвращает причину ошибки или пустую строку, если всё в порядке.
+func isSafeVLESSConfig(q url.Values) string {
 	if q.Get("allowInsecure") == "true" {
-		return false
+		return "allowInsecure=true is not allowed"
 	}
 	if q.Get("security") == "none" {
-		return false
+		return "security=none is not allowed"
 	}
 	if q.Get("security") == "reality" && q.Get("sni") == "" {
-		return false
+		return "reality requires SNI"
 	}
 	flow := q.Get("flow")
 	if flow != "" && q.Get("security") != "reality" {
-		return false
+		return "flow requires reality"
 	}
 	if q.Get("type") == "grpc" && q.Get("serviceName") == "" {
-		return false
+		return "gRPC requires serviceName"
 	}
-	return true
+	return ""
 }
 
 // isSafeTrojanConfig проверяет безопасность конфигурации Trojan.
-// Разрешает allowInsecure (осознанное решение), но блокирует gRPC без serviceName.
-func isSafeTrojanConfig(q url.Values) bool {
+// Возвращает причину ошибки или пустую строку.
+func isSafeTrojanConfig(q url.Values) string {
 	if q.Get("type") == "grpc" && q.Get("serviceName") == "" {
-		return false
+		return "gRPC requires serviceName"
 	}
-	return true // allowInsecure разрешён
+	return "" // allowInsecure разрешён
 }
 
-// === Обработка отдельных протоколов ===
+// === Обработка отдельных протоколов с детализированными причинами ===
 
-// processVLESS обрабатывает VLESS-ссылку: валидирует, фильтрует, пересобирает.
-func processVLESS(s string) string {
+// processVLESS обрабатывает VLESS-ссылку и возвращает результат и причину отклонения (если есть).
+func processVLESS(s string) (string, string) {
 	if len(s) > maxURILength {
-		return ""
+		return "", "line too long"
 	}
 	u, err := url.Parse(s)
 	if err != nil || u.Scheme != "vless" {
-		return ""
+		return "", "invalid VLESS URL format"
 	}
 
 	uuid := u.User.Username()
 	if uuid == "" || len(uuid) > maxIDLength {
-		return ""
+		return "", "missing or invalid UUID"
 	}
 
 	host, port, ok := parseHostPort(u)
 	if !ok {
-		return ""
+		return "", "invalid host or port"
 	}
 
-	if isForbiddenAnchor(u.Fragment) {
-		return ""
+	// Проверка запрещённых слов с детализацией
+	if hasBad, reason := checkBadWordsInName(u.Fragment); hasBad {
+		return "", reason
 	}
 
-	if !isSafeVLESSConfig(u.Query()) {
-		return ""
+	// Проверка безопасности
+	if reason := isSafeVLESSConfig(u.Query()); reason != "" {
+		return "", fmt.Sprintf("VLESS: %s", reason)
 	}
 
 	q := u.Query()
@@ -385,106 +388,111 @@ func processVLESS(s string) string {
 		buf.WriteString("#")
 		buf.WriteString(u.Fragment)
 	}
-	return buf.String()
+	return buf.String(), ""
 }
 
 // processVMess обрабатывает VMess-ссылку (base64-encoded JSON).
-func processVMess(s string) string {
+func processVMess(s string) (string, string) {
 	if len(s) > maxURILength {
-		return ""
+		return "", "line too long"
 	}
 
 	if !strings.HasPrefix(strings.ToLower(s), "vmess://") {
-		return ""
+		return "", "not a VMess link"
 	}
 
 	b64 := strings.TrimPrefix(s, "vmess://")
 	if b64 == "" {
-		return ""
+		return "", "empty VMess payload"
 	}
 
 	decoded, err := decodeUserInfo(b64)
 	if err != nil {
-		return ""
+		return "", "invalid VMess base64 encoding"
 	}
 
 	var vm map[string]interface{}
 	if err := json.Unmarshal(decoded, &vm); err != nil {
-		return ""
+		return "", "invalid VMess JSON format"
 	}
 
 	ps, _ := vm["ps"].(string)
 	add, _ := vm["add"].(string)
 	port, ok := vm["port"].(float64)
 	if !ok {
-		return ""
+		return "", "missing port in VMess config"
 	}
 	id, _ := vm["id"].(string)
 
 	if add == "" || id == "" {
-		return ""
+		return "", "missing server address or UUID"
 	}
 
 	if int(port) <= 0 || int(port) > 65535 {
-		return ""
+		return "", "invalid port number"
 	}
 
 	if !isValidHost(add) {
-		return ""
+		return "", "invalid server host"
 	}
 
-	if isForbiddenAnchor(ps) {
-		return ""
+	// Проверка запрещённых слов
+	if ps != "" {
+		if hasBad, reason := checkBadWordsInName(ps); hasBad {
+			return "", reason
+		}
 	}
 
 	netType, _ := vm["net"].(string)
 	if netType == "grpc" {
 		svc, _ := vm["serviceName"].(string)
 		if svc == "" {
-			return ""
+			return "", "VMess gRPC requires serviceName"
 		}
 	}
 
 	tls, _ := vm["tls"].(string)
 	if netType != "grpc" && tls != "tls" {
-		return ""
+		return "", "VMess without TLS is not allowed"
 	}
 
 	reencoded, err := json.Marshal(vm)
 	if err != nil {
-		return ""
+		return "", "failed to re-encode VMess config"
 	}
 
 	finalB64 := base64.StdEncoding.EncodeToString(reencoded)
-	return "vmess://" + finalB64
+	return "vmess://" + finalB64, ""
 }
 
 // processTrojan обрабатывает Trojan-ссылку.
-func processTrojan(s string) string {
+func processTrojan(s string) (string, string) {
 	if len(s) > maxURILength {
-		return ""
+		return "", "line too long"
 	}
 	u, err := url.Parse(s)
 	if err != nil || u.Scheme != "trojan" {
-		return ""
+		return "", "invalid Trojan URL format"
 	}
 
 	password := u.User.Username()
 	if password == "" {
-		return ""
+		return "", "missing password"
 	}
 
 	host, port, ok := parseHostPort(u)
 	if !ok {
-		return ""
+		return "", "invalid host or port"
 	}
 
-	if isForbiddenAnchor(u.Fragment) {
-		return ""
+	// Проверка запрещённых слов
+	if hasBad, reason := checkBadWordsInName(u.Fragment); hasBad {
+		return "", reason
 	}
 
-	if !isSafeTrojanConfig(u.Query()) {
-		return ""
+	// Проверка безопасности
+	if reason := isSafeTrojanConfig(u.Query()); reason != "" {
+		return "", fmt.Sprintf("Trojan: %s", reason)
 	}
 
 	var buf strings.Builder
@@ -501,45 +509,46 @@ func processTrojan(s string) string {
 		buf.WriteString("#")
 		buf.WriteString(u.Fragment)
 	}
-	return buf.String()
+	return buf.String(), ""
 }
 
 // processSS обрабатывает Shadowsocks-ссылку.
-func processSS(s string) string {
+func processSS(s string) (string, string) {
 	if len(s) > maxURILength {
-		return ""
+		return "", "line too long"
 	}
 	u, err := url.Parse(s)
 	if err != nil || u.Scheme != "ss" {
-		return ""
+		return "", "invalid Shadowsocks URL format"
 	}
 
 	userinfo := u.User.String()
 	if userinfo == "" || len(userinfo) > maxUserinfoLength {
-		return ""
+		return "", "missing or too long userinfo"
 	}
 
 	decoded, decodeErr := decodeUserInfo(userinfo)
 	if decodeErr != nil {
-		return ""
+		return "", "invalid Shadowsocks base64 encoding"
 	}
 
 	parts := strings.SplitN(string(decoded), ":", 2)
 	if len(parts) != 2 {
-		return ""
+		return "", "invalid cipher:password format"
 	}
 	cipher, password := parts[0], parts[1]
 	if cipher == "" || password == "" || !ssCipherRe.MatchString(cipher) {
-		return ""
+		return "", "invalid cipher or password"
 	}
 
 	host, port, ok := parseHostPort(u)
 	if !ok {
-		return ""
+		return "", "invalid host or port"
 	}
 
-	if isForbiddenAnchor(u.Fragment) {
-		return ""
+	// Проверка запрещённых слов
+	if hasBad, reason := checkBadWordsInName(u.Fragment); hasBad {
+		return "", reason
 	}
 
 	newUser := base64.RawURLEncoding.EncodeToString([]byte(cipher + ":" + password))
@@ -552,7 +561,7 @@ func processSS(s string) string {
 		buf.WriteString("#")
 		buf.WriteString(u.Fragment)
 	}
-	return buf.String()
+	return buf.String(), ""
 }
 
 // isPathSafe проверяет, что путь находится внутри базовой директории (защита от path traversal).
@@ -686,7 +695,7 @@ func processSource(id string, source *SafeSource) error {
 		origContent = result.([]byte)
 	}
 
-	// Обработка строк подписки
+	// Обработка строк подписки с детализацией причин
 	var out []string
 	var rejectedLines []string
 
@@ -697,37 +706,29 @@ func processSource(id string, source *SafeSource) error {
 			continue
 		}
 
-		if len(originalLine) > maxURILength {
-			rejectedLines = append(rejectedLines, "# REASON: Line too long", originalLine)
-			continue
-		}
-
 		lowerLine := strings.ToLower(originalLine)
-		var processedLine string
+		var processedLine, reason string
 
+		// === Обработка с детализацией ===
 		switch {
 		case strings.HasPrefix(lowerLine, "vless://"):
-			processedLine = processVLESS(originalLine)
+			processedLine, reason = processVLESS(originalLine)
 		case strings.HasPrefix(lowerLine, "vmess://"):
-			processedLine = processVMess(originalLine)
+			processedLine, reason = processVMess(originalLine)
 		case strings.HasPrefix(lowerLine, "trojan://"):
-			processedLine = processTrojan(originalLine)
+			processedLine, reason = processTrojan(originalLine)
 		case strings.HasPrefix(lowerLine, "ss://"):
-			processedLine = processSS(originalLine)
+			processedLine, reason = processSS(originalLine)
+		default:
+			reason = "unsupported protocol"
 		}
 
 		if processedLine != "" {
 			out = append(out, processedLine)
 		} else {
-			reason := "Processing failed"
-			if strings.HasPrefix(lowerLine, "vless://") {
-				reason = "Invalid or unsafe VLESS link"
-			} else if strings.HasPrefix(lowerLine, "vmess://") {
-				reason = "Invalid or unsafe VMess link"
-			} else if strings.HasPrefix(lowerLine, "trojan://") {
-				reason = "Invalid or unsafe Trojan link"
-			} else if strings.HasPrefix(lowerLine, "ss://") {
-				reason = "Invalid or unsafe Shadowsocks link"
+			// Если reason пуст (маловероятно), укажем общую ошибку
+			if reason == "" {
+				reason = "processing failed"
 			}
 			rejectedLines = append(rejectedLines, "# REASON: "+reason, originalLine)
 		}
