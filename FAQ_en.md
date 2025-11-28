@@ -22,6 +22,8 @@ Sometimes proxy subscriptions break because of a single bad line, causing your r
 
 It acts as a "smart filter" between public subscriptions and your device. It cleans the subscription in real time and delivers only what your client can actually use.
 
+⚠️ The program does not check the survivability of proxies. For this, use https://github.com/kutovoys/xray-checker
+
 ## What does the program remove?
 
 The program removes servers that:

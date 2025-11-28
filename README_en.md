@@ -31,6 +31,8 @@ This program is a smart filter for proxy server links (VLESS, VMess, Trojan, Sha
 
 If you have questions about the purpose of this program, please read the [FAQ](FAQ_en.md).
 
+⚠️ The program does not check the survivability of proxies. For this, use https://github.com/kutovoys/xray-checker
+
 ---
 
 ## What can the program do?

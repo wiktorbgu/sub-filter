@@ -31,6 +31,8 @@
 
 如果您對本程式的用途有疑問，請閱讀 [FAQ](FAQ_zh.md)。
 
+⚠️ 该程序不会检查代理的存活能力。如需此功能，请使用 https://github.com/kutovoys/xray-checker
+
 ---
 
 ## 程式功能
