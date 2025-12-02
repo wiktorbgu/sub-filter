@@ -75,6 +75,8 @@ var (
 	ssCipherRe = regexp.MustCompile(`^[a-zA-Z0-9_+-]+$`) // Валидный шифр Shadowsocks
 	// Валидный домен: ASCII или Punycode (xn--)
 	hostRegex = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]*[a-z0-9])?$|^xn--([a-z0-9-]+\.)+[a-z0-9-]+$`)
+	// pbk — base64url без padding, 43 символа (32-байтный ключ)
+	base64UrlRegex = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
 )
 
 // === Rate limiting по IP-адресам ===
@@ -304,15 +306,13 @@ func parseHostPort(u *url.URL) (string, int, bool) {
 }
 
 // isSafeVLESSConfig проверяет безопасность конфигурации VLESS.
-// Блокирует: allowInsecure, reality без sni, flow без reality, gRPC без serviceName.
+// Блокирует: allowInsecure, flow без reality, gRPC без serviceName.
 // Возвращает причину ошибки или пустую строку, если всё в порядке.
 func isSafeVLESSConfig(q url.Values) string {
 	if q.Get("allowInsecure") == "true" {
 		return "allowInsecure=true is not allowed"
 	}
-	if q.Get("security") == "reality" && q.Get("sni") == "" {
-		return "reality requires SNI"
-	}
+	// Проверка sni для reality перенесена в processVLESS
 	flow := q.Get("flow")
 	if flow != "" && q.Get("security") != "reality" {
 		return "flow requires reality"
@@ -379,11 +379,30 @@ func processVLESS(s string) (string, string) {
 	}
 	// =================================================================
 
-	// === Проверка обязательного параметра sid для REALITY ===
+	// === Проверка обязательных параметров для REALITY ===
 	if security == "reality" {
-		sid := q.Get("sid")
-		if sid == "" {
-			return "", "VLESS: missing or empty sid value for reality"
+		// sni — обязателен
+		if q.Get("sni") == "" {
+			return "", "VLESS: sni is required for reality"
+		}
+
+		// pbk (public key) — обязателен, 43-char base64url
+		pbk := q.Get("pbk")
+		if pbk == "" {
+			return "", "VLESS: missing pbk (public key) for reality"
+		}
+		if !base64UrlRegex.MatchString(pbk) {
+			return "", "VLESS: invalid pbk format (must be 43-char base64url, e.g., '7CJw8mF2U...')"
+		}
+
+		// sid — опционален (не проверяем)
+
+		// mode — только для xhttp
+		if q.Get("type") == "xhttp" {
+			mode := q.Get("mode")
+			if mode != "" && mode != "packet" {
+				return "", "VLESS: invalid mode for xhttp (must be empty or 'packet')"
+			}
 		}
 	}
 	// ======================================================
