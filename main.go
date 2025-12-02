@@ -290,29 +290,30 @@ func checkBadWordsInName(fragment string) (bool, string) {
 	return false, ""
 }
 
-// parseHostPort извлекает и проверяет хост и порт из URL.
-// Возвращает хост, порт и флаг успеха.
-func parseHostPort(u *url.URL) (string, int, bool) {
+// validateVLESSHostPort проверяет хост и порт VLESS-ссылки и возвращает ошибку при неудаче.
+func validateVLESSHostPort(u *url.URL) (string, int, string) {
 	host := u.Hostname()
 	portStr := u.Port()
 	if portStr == "" {
-		return "", 0, false
+		return "", 0, "missing port"
 	}
 	port, err := strconv.Atoi(portStr)
-	if err != nil || !isValidPort(port) || !isValidHost(host) {
-		return "", 0, false
+	if err != nil {
+		return "", 0, "invalid port"
 	}
-	return host, port, true
+	if !isValidPort(port) {
+		return "", 0, "port out of range"
+	}
+	if !isValidHost(host) {
+		return "", 0, "invalid host"
+	}
+	return host, port, ""
 }
 
 // isSafeVLESSConfig проверяет безопасность конфигурации VLESS.
-// Блокирует: allowInsecure, flow без reality, gRPC без serviceName.
+// Блокирует: flow без reality, gRPC без serviceName.
 // Возвращает причину ошибки или пустую строку, если всё в порядке.
 func isSafeVLESSConfig(q url.Values) string {
-	if q.Get("allowInsecure") == "true" {
-		return "allowInsecure=true is not allowed"
-	}
-	// Проверка sni для reality/tls перенесена в processVLESS
 	flow := q.Get("flow")
 	if flow != "" && q.Get("security") != "reality" {
 		return "flow requires reality"
@@ -323,13 +324,66 @@ func isSafeVLESSConfig(q url.Values) string {
 	return ""
 }
 
-// isSafeTrojanConfig проверяет безопасность конфигурации Trojan.
-// Возвращает причину ошибки или пустую строку.
-func isSafeTrojanConfig(q url.Values) string {
-	if q.Get("type") == "grpc" && q.Get("serviceName") == "" {
-		return "gRPC requires serviceName"
+// validateVLESSParams проверяет параметры VLESS и возвращает ошибку или пустую строку.
+func validateVLESSParams(q url.Values) string {
+	security := q.Get("security")
+	if security == "" {
+		return "security parameter is missing (insecure)"
 	}
-	return "" // allowInsecure разрешён
+	if security == "none" {
+		return "security=none is not allowed"
+	}
+
+	// Проверка allowInsecure (true или 1)
+	if allowInsecure := q.Get("allowInsecure"); allowInsecure == "true" || allowInsecure == "1" {
+		return "allowInsecure is not allowed"
+	}
+
+	// Проверка insecure=1 (дубликат allowInsecure из старых версий)
+	if insecure := q.Get("insecure"); insecure == "1" {
+		return "insecure=1 is not allowed"
+	}
+
+	// Проверка sni для tls/reality
+	if (security == "tls" || security == "reality") && q.Get("sni") == "" {
+		return "sni is required for security=tls or reality"
+	}
+
+	// Проверка REALITY-параметров
+	if security == "reality" {
+		pbk := q.Get("pbk")
+		if pbk == "" {
+			return "missing pbk (public key) for reality"
+		}
+		if !base64UrlRegex.MatchString(pbk) {
+			return "invalid pbk format (must be 43-char base64url)"
+		}
+		if q.Get("type") == "xhttp" {
+			mode := q.Get("mode")
+			if mode != "" && mode != "packet" {
+				return "invalid mode for xhttp (must be empty or 'packet')"
+			}
+		}
+	}
+
+	// Проверка headerType (только для kcp и quic)
+	transportType := q.Get("type")
+	headerType := q.Get("headerType")
+	if headerType != "" && transportType != "kcp" && transportType != "quic" {
+		return fmt.Sprintf("headerType is only allowed with kcp or quic (got type=%s, headerType=%s)", transportType, headerType)
+	}
+
+	// Проверка path для ws/httpupgrade/xhttp
+	if (transportType == "ws" || transportType == "httpupgrade" || transportType == "xhttp") && q.Get("path") == "" {
+		return fmt.Sprintf("path is required when type=%s", transportType)
+	}
+
+	// Проверка остальных правил
+	if reason := isSafeVLESSConfig(q); reason != "" {
+		return reason
+	}
+
+	return ""
 }
 
 // === Обработка отдельных протоколов с детализированными причинами ===
@@ -349,93 +403,29 @@ func processVLESS(s string) (string, string) {
 		return "", "missing or invalid UUID"
 	}
 
-	host, port, ok := parseHostPort(u)
-	if !ok {
-		return "", "invalid host or port"
+	// Проверка хоста и порта
+	host, port, hostErr := validateVLESSHostPort(u)
+	if hostErr != "" {
+		return "", "VLESS: " + hostErr
 	}
 
-	// Проверка запрещённых слов с детализацией
+	// Проверка запрещённых слов
 	if hasBad, reason := checkBadWordsInName(u.Fragment); hasBad {
 		return "", reason
 	}
 
 	q := u.Query()
 
-	// === Проверка обязательного параметра encryption (VLESS v1+) ===
+	// Проверка обязательного параметра encryption (VLESS v1+)
 	encryption := q.Get("encryption")
 	if encryption == "" {
 		return "", "VLESS: encryption parameter is missing (outdated format)"
 	}
 	// Разрешаем любое значение encryption — сохраняем как есть
-	// ==========================================================
 
-	// === Проверка security: должен быть явно задан (tls или reality) ===
-	security := q.Get("security")
-	if security == "" {
-		return "", "VLESS: security parameter is missing (insecure)"
-	}
-	if security == "none" {
-		return "", "VLESS: security=none is not allowed"
-	}
-	// =================================================================
-
-	// === Проверка обязательного sni для TLS и REALITY ===
-	if (security == "tls" || security == "reality") && q.Get("sni") == "" {
-		return "", "VLESS: sni is required for security=tls or reality"
-	}
-	// ====================================================
-
-	// === Проверка обязательных параметров для REALITY ===
-	if security == "reality" {
-		// pbk (public key) — обязателен, 43-char base64url
-		pbk := q.Get("pbk")
-		if pbk == "" {
-			return "", "VLESS: missing pbk (public key) for reality"
-		}
-		if !base64UrlRegex.MatchString(pbk) {
-			return "", "VLESS: invalid pbk format (must be 43-char base64url, e.g., '7CJw8mF2U...')"
-		}
-
-		// sid — опционален (не проверяем)
-
-		// mode — только для xhttp
-		if q.Get("type") == "xhttp" {
-			mode := q.Get("mode")
-			if mode != "" && mode != "packet" {
-				return "", "VLESS: invalid mode for xhttp (must be empty or 'packet')"
-			}
-		}
-	}
-	// ======================================================
-
-	// === Проверка недопустимого использования headerType ===
-	transportType := q.Get("type")
-	headerType := q.Get("headerType")
-	if headerType != "" {
-		// headerType разрешён только для kcp и quic (пакетная маскировка)
-		if transportType != "kcp" && transportType != "quic" {
-			return "", fmt.Sprintf("VLESS: headerType is only allowed with kcp or quic (got type=%s, headerType=%s)", transportType, headerType)
-		}
-	}
-	// ========================================================
-
-	// === Проверка обязательного path для ws, httpupgrade, xhttp ===
-	if (transportType == "ws" || transportType == "httpupgrade" || transportType == "xhttp") && q.Get("path") == "" {
-		return "", fmt.Sprintf("VLESS: path is required when type=%s", transportType)
-	}
-	// ==============================================================
-
-	// === Проверка параметра host (HTTP Host header) ===
-	if hostHeader := q.Get("host"); hostHeader != "" {
-		if !isValidHost(hostHeader) {
-			return "", fmt.Sprintf("VLESS: invalid host parameter %q", hostHeader)
-		}
-	}
-	// =================================================
-
-	// Проверка остальных правил безопасности
-	if reason := isSafeVLESSConfig(q); reason != "" {
-		return "", fmt.Sprintf("VLESS: %s", reason)
+	// Валидация всех параметров
+	if err := validateVLESSParams(q); err != "" {
+		return "", "VLESS: " + err
 	}
 
 	// Обрабатываем ALPN: извлекаем первый валидный токен (h3, h2, http/1.1)
@@ -697,6 +687,30 @@ func isLocalIP(ipStr string) bool {
 		return true // недекодируемое — считаем локальным (консервативно)
 	}
 	return ip.IsLoopback() || ip.IsPrivate()
+}
+
+// parseHostPort извлекает и проверяет хост и порт из URL.
+// Возвращает хост, порт и флаг успеха.
+func parseHostPort(u *url.URL) (string, int, bool) {
+	host := u.Hostname()
+	portStr := u.Port()
+	if portStr == "" {
+		return "", 0, false
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || !isValidPort(port) || !isValidHost(host) {
+		return "", 0, false
+	}
+	return host, port, true
+}
+
+// isSafeTrojanConfig проверяет безопасность конфигурации Trojan.
+// Возвращает причину ошибки или пустую строку.
+func isSafeTrojanConfig(q url.Values) string {
+	if q.Get("type") == "grpc" && q.Get("serviceName") == "" {
+		return "gRPC requires serviceName"
+	}
+	return "" // allowInsecure разрешён
 }
 
 // processSource обрабатывает одну подписку и сохраняет результат в кэш.
