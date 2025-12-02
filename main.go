@@ -312,7 +312,7 @@ func isSafeVLESSConfig(q url.Values) string {
 	if q.Get("allowInsecure") == "true" {
 		return "allowInsecure=true is not allowed"
 	}
-	// Проверка sni для reality перенесена в processVLESS
+	// Проверка sni для reality/tls перенесена в processVLESS
 	flow := q.Get("flow")
 	if flow != "" && q.Get("security") != "reality" {
 		return "flow requires reality"
@@ -379,13 +379,14 @@ func processVLESS(s string) (string, string) {
 	}
 	// =================================================================
 
+	// === Проверка обязательного sni для TLS и REALITY ===
+	if (security == "tls" || security == "reality") && q.Get("sni") == "" {
+		return "", "VLESS: sni is required for security=tls or reality"
+	}
+	// ====================================================
+
 	// === Проверка обязательных параметров для REALITY ===
 	if security == "reality" {
-		// sni — обязателен
-		if q.Get("sni") == "" {
-			return "", "VLESS: sni is required for reality"
-		}
-
 		// pbk (public key) — обязателен, 43-char base64url
 		pbk := q.Get("pbk")
 		if pbk == "" {
@@ -406,6 +407,22 @@ func processVLESS(s string) (string, string) {
 		}
 	}
 	// ======================================================
+
+	// === Проверка недопустимого использования headerType ===
+	transportType := q.Get("type")
+	headerType := q.Get("headerType")
+	if headerType != "" {
+		if transportType == "ws" || transportType == "httpupgrade" || transportType == "grpc" {
+			return "", fmt.Sprintf("VLESS: headerType is not allowed with type=%s", transportType)
+		}
+	}
+	// ========================================================
+
+	// === Проверка обязательного path для ws, httpupgrade, xhttp ===
+	if (transportType == "ws" || transportType == "httpupgrade" || transportType == "xhttp") && q.Get("path") == "" {
+		return "", fmt.Sprintf("VLESS: path is required when type=%s", transportType)
+	}
+	// ==============================================================
 
 	// === Проверка параметра host (HTTP Host header) ===
 	if hostHeader := q.Get("host"); hostHeader != "" {
