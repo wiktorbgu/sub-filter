@@ -360,8 +360,15 @@ func processVLESS(s string) (string, string) {
 	}
 
 	q := u.Query()
+	// === Проверка обязательного параметра encryption (VLESS v1+) ===
+	encryption := q.Get("encryption")
+	if encryption == "" {
+		return "", "VLESS: encryption parameter is missing (outdated format)"
+	}
+	// Разрешаем любое значение encryption — сохраняем как есть
+	// ==========================================================
 
-	// === НОВАЯ ПРОВЕРКА: security должен быть явно задан (tls или reality) ===
+	// === Проверка security: должен быть явно задан (tls или reality) ===
 	security := q.Get("security")
 	if security == "" {
 		return "", "VLESS: security parameter is missing (insecure)"
@@ -369,7 +376,7 @@ func processVLESS(s string) (string, string) {
 	if security == "none" {
 		return "", "VLESS: security=none is not allowed"
 	}
-	// =====================================================================
+	// =================================================================
 
 	// Проверка остальных правил безопасности
 	if reason := isSafeVLESSConfig(q); reason != "" {
