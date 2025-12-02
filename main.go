@@ -412,8 +412,9 @@ func processVLESS(s string) (string, string) {
 	transportType := q.Get("type")
 	headerType := q.Get("headerType")
 	if headerType != "" {
-		if transportType == "ws" || transportType == "httpupgrade" || transportType == "grpc" {
-			return "", fmt.Sprintf("VLESS: headerType is not allowed with type=%s", transportType)
+		// headerType разрешён только для kcp и quic (пакетная маскировка)
+		if transportType != "kcp" && transportType != "quic" {
+			return "", fmt.Sprintf("VLESS: headerType is only allowed with kcp or quic (got type=%s, headerType=%s)", transportType, headerType)
 		}
 	}
 	// ========================================================
