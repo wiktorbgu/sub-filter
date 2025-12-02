@@ -71,9 +71,10 @@ var (
 // === Регулярные выражения для валидации ===
 
 var (
-	validIDRe  = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)                                                   // Валидный ID источника
-	ssCipherRe = regexp.MustCompile(`^[a-zA-Z0-9_+-]+$`)                                                 // Валидный шифр Shadowsocks
-	hostRegex  = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]*[a-z0-9])?$`) // Валидный домен
+	validIDRe  = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)   // Валидный ID источника
+	ssCipherRe = regexp.MustCompile(`^[a-zA-Z0-9_+-]+$`) // Валидный шифр Shadowsocks
+	// Валидный домен: ASCII или Punycode (xn--)
+	hostRegex = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]*[a-z0-9])?$|^xn--([a-z0-9-]+\.)+[a-z0-9-]+$`)
 )
 
 // === Rate limiting по IP-адресам ===
@@ -242,13 +243,12 @@ func isValidUserAgent(ua string) bool {
 }
 
 // isValidHost проверяет корректность хоста (домен или публичный IP).
+// Поддерживает Punycode (xn--).
 func isValidHost(host string) bool {
 	if host == "" {
 		return false
 	}
-	if strings.HasPrefix(host, "xn--") {
-		return false
-	}
+	// Убран запрет на xn-- — теперь разрешён через hostRegex
 	if ip := net.ParseIP(host); ip != nil {
 		return true
 	}
@@ -360,6 +360,7 @@ func processVLESS(s string) (string, string) {
 	}
 
 	q := u.Query()
+
 	// === Проверка обязательного параметра encryption (VLESS v1+) ===
 	encryption := q.Get("encryption")
 	if encryption == "" {
@@ -377,6 +378,14 @@ func processVLESS(s string) (string, string) {
 		return "", "VLESS: security=none is not allowed"
 	}
 	// =================================================================
+
+	// === Проверка параметра host (HTTP Host header) ===
+	if hostHeader := q.Get("host"); hostHeader != "" {
+		if !isValidHost(hostHeader) {
+			return "", fmt.Sprintf("VLESS: invalid host parameter %q", hostHeader)
+		}
+	}
+	// =================================================
 
 	// Проверка остальных правил безопасности
 	if reason := isSafeVLESSConfig(q); reason != "" {
