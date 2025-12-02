@@ -369,12 +369,32 @@ func processVLESS(s string) (string, string) {
 
 	// Обрабатываем ALPN: оставляем только первый, если указано несколько через запятую
 	q := u.Query()
+	// Обрабатываем ALPN: извлекаем первый валидный токен (h3, h2, http/1.1)
 	if alpnValues := q["alpn"]; len(alpnValues) > 0 {
-		firstAlpn := alpnValues[0]
-		if idx := strings.IndexByte(firstAlpn, ','); idx != -1 {
-			firstAlpn = firstAlpn[:idx]
+		rawAlpn := alpnValues[0]
+		var firstValid string
+
+		// Проверяем по порядку приоритета
+		if strings.HasPrefix(rawAlpn, "h3") {
+			firstValid = "h3"
+		} else if strings.HasPrefix(rawAlpn, "h2") {
+			firstValid = "h2"
+		} else if strings.HasPrefix(rawAlpn, "http/1.1") {
+			firstValid = "http/1.1"
+		} else {
+			// Резерв: берём до первой запятой или всю строку
+			if idx := strings.IndexByte(rawAlpn, ','); idx != -1 {
+				firstValid = rawAlpn[:idx]
+			} else {
+				firstValid = rawAlpn
+			}
 		}
-		q["alpn"] = []string{firstAlpn}
+
+		if firstValid != "" {
+			q["alpn"] = []string{firstValid}
+		} else {
+			delete(q, "alpn")
+		}
 	}
 
 	var buf strings.Builder
