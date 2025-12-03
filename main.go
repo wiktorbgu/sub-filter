@@ -853,20 +853,22 @@ func processSource(id string, source *SafeSource) error {
 		os.Remove(rejectedCache) // Игнорируем ошибку "файл не найден"
 	}
 
-	// Формируем итоговую подписку
-	sourceHost := "unknown"
-	if h, _, err := net.SplitHostPort(parsedSource.Host); err == nil {
-		sourceHost = h
-	} else {
-		sourceHost = parsedSource.Host
+	// Формируем имя для profile-title
+	profileName := "filtered_" + id
+	if u, err := url.Parse(source.URL); err == nil {
+		base := path.Base(u.Path)
+		if base != "" && regexp.MustCompile(`^[a-zA-Z0-9._-]+\.txt$`).MatchString(base) {
+			profileName = strings.TrimSuffix(base, ".txt")
+		}
 	}
+	profileName = regexp.MustCompile(`[^a-zA-Z0-9._-]`).ReplaceAllString(profileName, "_")
 
 	updateInterval := int(cacheTTL.Seconds() / 3600)
 	if updateInterval < 1 {
 		updateInterval = 1
 	}
 
-	profileTitle := fmt.Sprintf("#profile-title: %s filtered %s", sourceHost, id)
+	profileTitle := fmt.Sprintf("#profile-title: %s filtered %s", profileName, id)
 	profileInterval := fmt.Sprintf("#profile-update-interval: %d", updateInterval)
 
 	finalLines := []string{profileTitle, profileInterval, ""}
