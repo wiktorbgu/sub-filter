@@ -143,25 +143,49 @@ func autoDecodeBase64(data []byte) []byte {
 type LineProcessor func(string) string
 
 // loadTextFile загружает текстовый файл, пропуская пустые строки и комментарии.
-// Автоматически раскодирует base64, если весь файл закодирован.
+// Автоматически раскодирует base64, если файл не содержит признаков прокси-ссылок.
 // Применяет опциональный процессор к каждой строке.
 func loadTextFile(filename string, processor LineProcessor) ([]string, error) {
 	file, err := os.Open(filename)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close() // Закрываем файл даже при ошибке
+	defer file.Close()
 
-	// Читаем весь файл в буфер
+	// Читаем весь файл в память
 	data, err := io.ReadAll(file)
 	if err != nil {
 		return nil, err
 	}
 
-	// Пытаемся автоматически раскодировать ВЕСЬ файл как base64
-	data = autoDecodeBase64(data)
+	// Проверяем, содержит ли файл признаки прокси-ссылок
+	hasProxy := bytes.Contains(data, []byte("vless://")) ||
+		bytes.Contains(data, []byte("vmess://")) ||
+		bytes.Contains(data, []byte("trojan://")) ||
+		bytes.Contains(data, []byte("ss://"))
 
-	reader := bufio.NewReader(bytes.NewReader(data))
+	var finalData []byte
+
+	if hasProxy {
+		// Файл уже в читаемом виде
+		finalData = data
+	} else {
+		// Пробуем раскодировать как base64
+		decoded := autoDecodeBase64(data)
+		// Проверяем, что после декодирования появились прокси-ссылки
+		if bytes.Contains(decoded, []byte("vless://")) ||
+			bytes.Contains(decoded, []byte("vmess://")) ||
+			bytes.Contains(decoded, []byte("trojan://")) ||
+			bytes.Contains(decoded, []byte("ss://")) {
+			finalData = decoded
+		} else {
+			// Не base64 и не подписка — ошибка
+			return nil, fmt.Errorf("file is neither a valid proxy list nor a valid base64-encoded proxy list")
+		}
+	}
+
+	// Обрабатываем как обычный текст
+	reader := bufio.NewReader(bytes.NewReader(finalData))
 	// Пропускаем BOM, если есть
 	if b, err := reader.Peek(3); err == nil && bytes.Equal(b, []byte{0xEF, 0xBB, 0xBF}) {
 		reader.Discard(3)
