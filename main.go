@@ -109,27 +109,31 @@ func isPrintableASCII(data []byte) bool {
 // autoDecodeBase64 пытается декодировать весь входной буфер как base64.
 // Если успешно — возвращает декодированные байты, иначе — исходные.
 func autoDecodeBase64(data []byte) []byte {
-	// Удаляем все пробельные символы (включая \n, \r, пробелы)
+	// Сохраняем оригинальные данные
+	original := data
+
+	// Удаляем все пробельные символы
 	trimmed := regexp.MustCompile(`\s+`).ReplaceAll(data, []byte{})
 
-	// Проверяем, что содержит только base64-символы
-	if !regexp.MustCompile(`^[A-Za-z0-9+/=]+$`).Match(trimmed) {
-		return data // не base64
+	// Дополняем padding до кратности 4
+	missingPadding := len(trimmed) % 4
+	if missingPadding != 0 {
+		trimmed = append(trimmed, bytes.Repeat([]byte{'='}, 4-missingPadding)...)
 	}
 
-	// Пробуем декодировать
+	// Декодируем
 	decoded, err := base64.StdEncoding.DecodeString(string(trimmed))
 	if err != nil {
-		// Пробуем Raw-кодировку (без padding)
+		// Пробуем Raw
 		decoded, err = base64.RawStdEncoding.DecodeString(string(trimmed))
 		if err != nil {
-			return data // не base64
+			return original // возвращаем оригинал
 		}
 	}
 
-	// Проверяем, что декодированное содержимое — текст (а не бинарник)
+	// Проверяем, что это текст
 	if !isPrintableASCII(decoded) {
-		return data
+		return original
 	}
 
 	return decoded
@@ -154,7 +158,7 @@ func loadTextFile(filename string, processor LineProcessor) ([]string, error) {
 		return nil, err
 	}
 
-	// Пытаемся автоматически раскодировать base64
+	// Пытаемся автоматически раскодировать ВЕСЬ файл как base64
 	data = autoDecodeBase64(data)
 
 	reader := bufio.NewReader(bytes.NewReader(data))
