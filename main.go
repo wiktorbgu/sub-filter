@@ -109,10 +109,7 @@ func isPrintableASCII(data []byte) bool {
 // autoDecodeBase64 пытается декодировать весь входной буфер как base64.
 // Если успешно — возвращает декодированные байты, иначе — исходные.
 func autoDecodeBase64(data []byte) []byte {
-	// Сохраняем оригинальные данные
-	original := data
-
-	// Удаляем все пробельные символы
+	// Удаляем все пробельные символы (включая \n, \r, пробелы)
 	trimmed := regexp.MustCompile(`\s+`).ReplaceAll(data, []byte{})
 
 	// Дополняем padding до кратности 4
@@ -121,19 +118,19 @@ func autoDecodeBase64(data []byte) []byte {
 		trimmed = append(trimmed, bytes.Repeat([]byte{'='}, 4-missingPadding)...)
 	}
 
-	// Декодируем
+	// Пробуем декодировать
 	decoded, err := base64.StdEncoding.DecodeString(string(trimmed))
 	if err != nil {
-		// Пробуем Raw
+		// Пробуем Raw-кодировку (без padding)
 		decoded, err = base64.RawStdEncoding.DecodeString(string(trimmed))
 		if err != nil {
-			return original // возвращаем оригинал
+			return data // не base64
 		}
 	}
 
-	// Проверяем, что это текст
+	// Проверяем, что декодированное содержимое — текст (а не бинарник)
 	if !isPrintableASCII(decoded) {
-		return original
+		return data
 	}
 
 	return decoded
@@ -143,25 +140,15 @@ func autoDecodeBase64(data []byte) []byte {
 type LineProcessor func(string) string
 
 // loadTextFile загружает текстовый файл, пропуская пустые строки и комментарии.
-// Автоматически раскодирует base64, если весь файл закодирован.
 // Применяет опциональный процессор к каждой строке.
 func loadTextFile(filename string, processor LineProcessor) ([]string, error) {
 	file, err := os.Open(filename)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close() // Закрываем файл даже при ошибке
+	defer file.Close()
 
-	// Читаем весь файл в буфер
-	data, err := io.ReadAll(file)
-	if err != nil {
-		return nil, err
-	}
-
-	// Пытаемся автоматически раскодировать ВЕСЬ файл как base64
-	data = autoDecodeBase64(data)
-
-	reader := bufio.NewReader(bytes.NewReader(data))
+	reader := bufio.NewReader(file)
 	// Пропускаем BOM, если есть
 	if b, err := reader.Peek(3); err == nil && bytes.Equal(b, []byte{0xEF, 0xBB, 0xBF}) {
 		reader.Discard(3)
@@ -857,6 +844,23 @@ func processSource(id string, source *SafeSource) error {
 		}
 		origContent = result.([]byte)
 	}
+
+	// === ОПРЕДЕЛЯЕМ: base64 или нет? ===
+	hasProxy := bytes.Contains(origContent, []byte("vless://")) ||
+		bytes.Contains(origContent, []byte("vmess://")) ||
+		bytes.Contains(origContent, []byte("trojan://")) ||
+		bytes.Contains(origContent, []byte("ss://"))
+
+	if !hasProxy {
+		decoded := autoDecodeBase64(origContent)
+		if bytes.Contains(decoded, []byte("vless://")) ||
+			bytes.Contains(decoded, []byte("vmess://")) ||
+			bytes.Contains(decoded, []byte("trojan://")) ||
+			bytes.Contains(decoded, []byte("ss://")) {
+			origContent = decoded
+		}
+	}
+	// ===================================
 
 	// Обработка строк подписки с детализацией причин
 	var out []string
