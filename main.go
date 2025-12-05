@@ -544,6 +544,8 @@ func processVMess(s string) (string, string) {
 
 	ps, _ := vm["ps"].(string)
 	add, _ := vm["add"].(string)
+
+	// Извлекаем и валидируем порт (может быть числом или строкой)
 	var port float64
 	switch v := vm["port"].(type) {
 	case float64:
@@ -557,6 +559,8 @@ func processVMess(s string) (string, string) {
 	default:
 		return "", "missing or invalid port in VMess config"
 	}
+
+	// Извлекаем UUID
 	id, _ := vm["id"].(string)
 
 	if add == "" || id == "" {
@@ -692,6 +696,77 @@ func processSS(s string) (string, string) {
 	buf.WriteString(newUser)
 	buf.WriteString("@")
 	buf.WriteString(net.JoinHostPort(host, strconv.Itoa(port)))
+	if u.Fragment != "" {
+		buf.WriteString("#")
+		buf.WriteString(u.Fragment)
+	}
+	return buf.String(), ""
+}
+
+// processHysteria2 обрабатывает Hysteria2-ссылку и возвращает результат и причину отклонения (если есть).
+// Поддерживает два URI-префикса: hysteria2:// и hy2://
+func processHysteria2(s string) (string, string) {
+	if len(s) > maxURILength {
+		return "", "line too long"
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return "", "invalid Hysteria2 URL format"
+	}
+	// Поддерживаем оба префикса: hysteria2 и hy2
+	if u.Scheme != "hysteria2" && u.Scheme != "hy2" {
+		return "", "invalid Hysteria2 scheme (expected 'hysteria2' or 'hy2')"
+	}
+
+	// Проверка UUID / имени пользователя (obfs-password может быть именем)
+	userinfo := u.User.String()
+	if userinfo == "" {
+		return "", "missing auth info (UUID or username) in Hysteria2"
+	}
+
+	host, port, ok := parseHostPort(u)
+	if !ok {
+		return "", "invalid host or port in Hysteria2"
+	}
+
+	// Проверка запрещённых слов в названии (fragment после #)
+	if hasBad, reason := checkBadWordsInName(u.Fragment); hasBad {
+		return "", reason
+	}
+
+	q := u.Query()
+
+	// Запрет insecure=1 — отключает проверку сертификата (небезопасно)
+	if insecure := q.Get("insecure"); insecure == "1" {
+		return "", "Hysteria2: insecure=1 is not allowed (certificate verification required)"
+	}
+
+	// Проверка obfs — для публичных подписок обязателен obfs=salamander
+	obfs := q.Get("obfs")
+	if obfs == "" {
+		return "", "Hysteria2: obfs parameter is missing (required for public subscriptions)"
+	}
+	if obfs != "salamander" {
+		return "", fmt.Sprintf("Hysteria2: unsupported obfs method %q (only 'salamander' allowed)", obfs)
+	}
+
+	// Проверка obfs-password — обязателен, если указан obfs
+	obfsPassword := q.Get("obfs-password")
+	if obfsPassword == "" {
+		return "", "Hysteria2: obfs-password is missing (required when obfs is used)"
+	}
+
+	// Собираем итоговую ссылку (без изменений параметров)
+	var buf strings.Builder
+	buf.WriteString(u.Scheme)
+	buf.WriteString("://")
+	buf.WriteString(userinfo)
+	buf.WriteString("@")
+	buf.WriteString(net.JoinHostPort(host, strconv.Itoa(port)))
+	if len(q) > 0 {
+		buf.WriteString("?")
+		buf.WriteString(q.Encode())
+	}
 	if u.Fragment != "" {
 		buf.WriteString("#")
 		buf.WriteString(u.Fragment)
@@ -858,14 +933,18 @@ func processSource(id string, source *SafeSource) error {
 	hasProxy := bytes.Contains(origContent, []byte("vless://")) ||
 		bytes.Contains(origContent, []byte("vmess://")) ||
 		bytes.Contains(origContent, []byte("trojan://")) ||
-		bytes.Contains(origContent, []byte("ss://"))
+		bytes.Contains(origContent, []byte("ss://")) ||
+		bytes.Contains(origContent, []byte("hysteria2://")) ||
+		bytes.Contains(origContent, []byte("hy2://"))
 
 	if !hasProxy {
 		decoded := autoDecodeBase64(origContent)
 		if bytes.Contains(decoded, []byte("vless://")) ||
 			bytes.Contains(decoded, []byte("vmess://")) ||
 			bytes.Contains(decoded, []byte("trojan://")) ||
-			bytes.Contains(decoded, []byte("ss://")) {
+			bytes.Contains(decoded, []byte("ss://")) ||
+			bytes.Contains(decoded, []byte("hysteria2://")) ||
+			bytes.Contains(decoded, []byte("hy2://")) {
 			origContent = decoded
 		}
 	}
@@ -885,7 +964,7 @@ func processSource(id string, source *SafeSource) error {
 		lowerLine := strings.ToLower(originalLine)
 		var processedLine, reason string
 
-		// === Обработка с детализацией ===
+		// === Обработка поддерживаемых протоколов с детализацией ===
 		switch {
 		case strings.HasPrefix(lowerLine, "vless://"):
 			processedLine, reason = processVLESS(originalLine)
@@ -895,6 +974,9 @@ func processSource(id string, source *SafeSource) error {
 			processedLine, reason = processTrojan(originalLine)
 		case strings.HasPrefix(lowerLine, "ss://"):
 			processedLine, reason = processSS(originalLine)
+		case strings.HasPrefix(lowerLine, "hysteria2://") || strings.HasPrefix(lowerLine, "hy2://"):
+			// Обработка Hysteria2: поддерживаем оба префикса
+			processedLine, reason = processHysteria2(originalLine)
 		default:
 			reason = "unsupported protocol"
 		}
