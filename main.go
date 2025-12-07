@@ -376,16 +376,6 @@ func validateVLESSParams(q url.Values) string {
 		return "security=none is not allowed"
 	}
 
-	// Проверка allowInsecure (true или 1)
-	if allowInsecure := q.Get("allowInsecure"); allowInsecure == "true" || allowInsecure == "1" {
-		return "allowInsecure is not allowed"
-	}
-
-	// Проверка insecure=1 (дубликат allowInsecure из старых версий)
-	if insecure := q.Get("insecure"); insecure == "1" {
-		return "insecure=1 is not allowed"
-	}
-
 	// Проверка sni для tls/reality
 	if (security == "tls" || security == "reality") && q.Get("sni") == "" {
 		return "sni is required for security=tls or reality"
@@ -457,6 +447,17 @@ func processVLESS(s string) (string, string) {
 	}
 
 	q := u.Query()
+
+	// === Удаляем небезопасные параметры (не отклоняем, а очищаем) ===
+	// allowInsecure=1 и insecure=1 отключают проверку сертификата, но не шифрование.
+	// Мы удаляем их, чтобы клиент всегда проверял сертификат (повышаем безопасность).
+	if allowInsecure := q.Get("allowInsecure"); allowInsecure == "true" || allowInsecure == "1" {
+		q.Del("allowInsecure")
+	}
+	if insecure := q.Get("insecure"); insecure == "1" {
+		q.Del("insecure")
+	}
+	// =================================================================
 
 	// Проверка обязательного параметра encryption (VLESS v1+)
 	encryption := q.Get("encryption")
@@ -705,6 +706,7 @@ func processSS(s string) (string, string) {
 
 // processHysteria2 обрабатывает Hysteria2-ссылку и возвращает результат и причину отклонения (если есть).
 // Поддерживает два URI-префикса: hysteria2:// и hy2://
+// Параметр insecure=1 разрешён — шифрование трафика в Hysteria2 всегда включено.
 func processHysteria2(s string) (string, string) {
 	if len(s) > maxURILength {
 		return "", "line too long"
@@ -736,8 +738,10 @@ func processHysteria2(s string) (string, string) {
 
 	q := u.Query()
 
-	// === УДАЛЕНО: запрет insecure=1 ===
-	// Hysteria2 всегда шифрует трафик, поэтому insecure=1 допустим
+	// === Примечание: insecure=1 разрешён в Hysteria2 ===
+	// В Hysteria2 трафик всегда шифруется (AEAD),
+	// insecure=1 только отключает проверку TLS-сертификата.
+	// Мы НЕ удаляем и НЕ блокируем этот параметр.
 
 	// Проверка obfs — для публичных подписок обязателен obfs=salamander
 	obfs := q.Get("obfs")
