@@ -35,3 +35,4 @@ cache/
 filter
 .DS_Store
 lint.txt
+build/

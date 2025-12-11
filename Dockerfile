@@ -24,5 +24,7 @@ COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 # Копируем бинарник
 COPY --from=builder /app/filter /filter
 
+EXPOSE 8000
+
 # Точка входа — позволяет передавать аргументы при запуске
 ENTRYPOINT ["/filter"]

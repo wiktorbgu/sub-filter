@@ -1,0 +1,17 @@
+# Stage 1: извлекаем CA-сертификаты
+FROM alpine:latest AS certs
+
+RUN apk --no-cache add ca-certificates
+
+# Stage 2: минимальный runtime
+FROM scratch
+
+# CA-сертификаты для HTTPS
+COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+
+# Бинарник (создаётся в GitHub Actions как build/filter)
+COPY build/filter /filter
+
+EXPOSE 8000
+
+ENTRYPOINT ["/filter"]
