@@ -74,30 +74,31 @@ func (VLESSLink) Process(s string) (string, string) {
 	q := u.Query()
 
 	// === Удаляем insecure и allowInsecure независимо от значения ===
-	// Эти параметры избыточны (значения по умолчанию) или снижают безопасность.
-	// Полное удаление упрощает ссылку и гарантирует валидацию сертификата.
+	// Эти параметры избыточны или снижают безопасность.
 	q.Del("insecure")
 	q.Del("allowInsecure")
 	// =================================================================
 
-	// === Проверка параметра encryption (защита от обхода вроде none%3D) ===
-	encryptionRaw := q.Get("encryption")
-	if encryptionRaw == "" {
+	// === Нормализация параметра encryption ===
+	// Цель: привести все варианты "none" к единому значению "none",
+	// чтобы последующая валидация могла его отклонить.
+	if encryptionRaw := q.Get("encryption"); encryptionRaw != "" {
+		// Декодируем URL-escape (none%3D → none=)
+		encryptionDecoded, err := url.QueryUnescape(encryptionRaw)
+		if err != nil {
+			encryptionDecoded = encryptionRaw // оставляем как есть при ошибке
+		}
+		// Приводим к нижнему регистру и удаляем trailing whitespace и =
+		normalized := strings.ToLower(strings.TrimRight(encryptionDecoded, " ="))
+		// Если начинается с "none", заменяем полностью на "none"
+		if strings.HasPrefix(normalized, "none") {
+			q.Set("encryption", "none")
+		}
+		// Иначе оставляем исходное значение (после декодирования)
+		// Примечание: исходное значение может быть уже декодировано ранее,
+		// но это безопасно — q.Encode() корректно экранирует при выводе.
+	} else {
 		return "", "VLESS: encryption parameter is missing (outdated format)"
-	}
-
-	// Декодируем, если значение закодировано (например, none%3D → none=)
-	encryptionDecoded, err := url.QueryUnescape(encryptionRaw)
-	if err != nil {
-		// Если декодирование невозможно — используем как есть
-		encryptionDecoded = encryptionRaw
-	}
-
-	// Нормализуем: удаляем trailing = и пробелы, приводим к нижнему регистру
-	encryptionNormalized := strings.ToLower(strings.TrimRight(encryptionDecoded, " ="))
-
-	if encryptionNormalized == "none" {
-		return "", "VLESS: encryption=none is not allowed (insecure)"
 	}
 	// =================================================================
 
