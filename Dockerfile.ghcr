@@ -1,5 +1,5 @@
 # Stage 1: извлекаем CA-сертификаты
-FROM alpine:latest AS certs
+FROM --platform=$BUILDPLATFORM alpine:latest AS certs
 
 RUN apk --no-cache add ca-certificates
 
