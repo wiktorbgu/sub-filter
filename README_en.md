@@ -165,7 +165,7 @@ Replace:
 
 ## Ready-to-use Docker image
 
-Available for Linux `386`, `arm/v7`, `amd64` and `arm64`, built according to the rules in `Dockerfile.ghcr`.
+Available for Linux `386`, `arm/v7`, `amd64` and `arm64`, built according to the rules in `ko`.
 
 ```
 ghcr.io/viktor45/sub-filter:latest
@@ -192,7 +192,7 @@ docker run -d \
   --name sub-filter \
   -p 8000:8000 \
   -v $(pwd)/config:/config:ro \
-  -v $(pwd)/cache:/cache:rw \
+  -v $(pwd)/cache:/tmp/sub-filter-cache:rw \
   sub-filter \
   8000 1800
 ```
@@ -204,7 +204,7 @@ podman run -d --replace \
   --name sub-filter \
   -p 8000:8000 \
   -v $(pwd)/config:/config:ro,z \
-  -v $(pwd)/cache:/cache:rw,z \
+  -v $(pwd)/cache:/tmp/sub-filter-cache:rw,z \
   sub-filter \
   8000 1800
 ```
@@ -223,7 +223,7 @@ You can run one-time processing in Docker:
 ```
 docker run --rm \
   -v $(pwd)/config:/config:ro \
-  -v $(pwd)/cache:/cache:rw \
+  -v $(pwd)/cache:/tmp/sub-filter-cache:rw \
   sub-filter \
   --cli 1800
 ```
