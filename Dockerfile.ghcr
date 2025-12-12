@@ -1,16 +1,27 @@
-# Stage 1: извлекаем CA-сертификаты
-FROM --platform=$BUILDPLATFORM alpine:latest AS certs
+# Build stage
+FROM --platform=$BUILDPLATFORM golang:alpine AS builder
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+
+RUN go mod download
+
+COPY . .
+
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags '-w -s -extldflags "-static"' -tags timetzdata -o filter .
+
+# Certs stage
+FROM alpine:latest AS certs
 
 RUN apk --no-cache add ca-certificates
 
-# Stage 2: минимальный runtime
+# Final stage
 FROM scratch
 
-# CA-сертификаты для HTTPS
 COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 
-# Бинарник (создаётся в GitHub Actions как build/filter)
-COPY build/filter /filter
+COPY --from=builder /src/filter /filter
 
 EXPOSE 8000
 
