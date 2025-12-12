@@ -1,4 +1,4 @@
-# Build stage
+# Build stage — runs on build platform (amd64)
 FROM --platform=$BUILDPLATFORM golang:alpine AS builder
 
 WORKDIR /src
@@ -11,12 +11,12 @@ COPY . .
 
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags '-w -s -extldflags "-static"' -tags timetzdata -o filter .
 
-# Certs stage — MUST use --platform=$BUILDPLATFORM
+# Certs stage — MUST also run on build platform to avoid QEMU issues
 FROM --platform=$BUILDPLATFORM alpine:latest AS certs
 
 RUN apk --no-cache add ca-certificates
 
-# Final stage
+# Final stage — target platform (amd64/arm64)
 FROM scratch
 
 COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
