@@ -1,39 +1,33 @@
-# Build stage — fixed Go version, runs on build platform (amd64)
+# Build stage — runs on build platform (amd64)
 FROM --platform=$BUILDPLATFORM golang:1.25-alpine3.23 AS builder
 
 WORKDIR /src
 
-# Copy Go modules
-COPY go.mod go.sum ./
+# Extract target architecture from TARGETPLATFORM
+ARG TARGETPLATFORM
+RUN case "$TARGETPLATFORM" in \
+      linux/amd64)   export GOARCH=amd64 ;; \
+      linux/386)     export GOARCH=386 ;; \
+      linux/arm64)   export GOARCH=arm64 ;; \
+      linux/arm/v7)  export GOARCH=arm GOARM=7 ;; \
+      *) echo "ERROR: Unsupported platform: $TARGETPLATFORM" && exit 1 ;; \
+    esac && \
+    echo "Building for GOOS=linux GOARCH=$GOARCH${GOARM:+ GOARM=$GOARM}" && \
+    CGO_ENABLED=0 GOOS=linux go build \
+      -ldflags '-w -s -extldflags "-static"' \
+      -tags timetzdata \
+      -a -installsuffix "static" \
+      -o filter .
 
-# Download dependencies
-RUN go mod download
-
-# Copy source code
-COPY . .
-
-# Build static binary for target platform (GOARCH set by Buildx)
-RUN CGO_ENABLED=0 GOOS=linux go build \
-    -ldflags '-w -s -extldflags "-static"' \
-    -tags timetzdata \
-    -o filter .
-
-# Certs stage — fixed Alpine version, runs on build platform
+# Certs stage — runs on build platform
 FROM --platform=$BUILDPLATFORM alpine:3.23 AS certs
-
 RUN apk --no-cache add ca-certificates
 
 # Final minimal stage
 FROM scratch
 
-# Copy CA certificates (architecture-independent)
 COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-
-# Copy statically linked Go binary
 COPY --from=builder /src/filter /filter
 
-# Expose port
 EXPOSE 8000
-
-# Run binary
 ENTRYPOINT ["/filter"]

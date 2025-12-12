@@ -1,7 +1,6 @@
 # .github/workflows/ghcr-image.yaml
 #
 # Builds and publishes a secure, multi-arch Docker image for sub-filter to GHCR.
-# Guaranteed to produce ONLY linux/amd64 and linux/arm64 architectures.
 
 name: sub-filter ghcr.io Image CI
 
@@ -57,7 +56,7 @@ jobs:
         with:
           context: .
           file: Dockerfile.ghcr
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64,linux/386,linux/arm64,linux/arm/v7
           labels: ${{ steps.meta.outputs.labels }}
           tags: ${{ steps.meta.outputs.tags }}
           push: true
