@@ -27,6 +27,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	_ "time/tzdata"
 
 	"sub-filter/hysteria2"
 	"sub-filter/ss"
