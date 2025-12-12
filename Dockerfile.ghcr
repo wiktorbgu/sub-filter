@@ -1,28 +1,39 @@
-# Build stage — runs on build platform (amd64)
-FROM --platform=$BUILDPLATFORM golang:alpine AS builder
+# Build stage — fixed Go version, runs on build platform (amd64)
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine3.23 AS builder
 
 WORKDIR /src
 
+# Copy Go modules
 COPY go.mod go.sum ./
 
+# Download dependencies
 RUN go mod download
 
+# Copy source code
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags '-w -s -extldflags "-static"' -tags timetzdata -o filter .
+# Build static binary for target platform (GOARCH set by Buildx)
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags '-w -s -extldflags "-static"' \
+    -tags timetzdata \
+    -o filter .
 
-# Certs stage — MUST also run on build platform to avoid QEMU issues
-FROM --platform=$BUILDPLATFORM alpine:latest AS certs
+# Certs stage — fixed Alpine version, runs on build platform
+FROM --platform=$BUILDPLATFORM alpine:3.23 AS certs
 
 RUN apk --no-cache add ca-certificates
 
-# Final stage — target platform (amd64/arm64)
+# Final minimal stage
 FROM scratch
 
+# Copy CA certificates (architecture-independent)
 COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 
+# Copy statically linked Go binary
 COPY --from=builder /src/filter /filter
 
+# Expose port
 EXPOSE 8000
 
+# Run binary
 ENTRYPOINT ["/filter"]
