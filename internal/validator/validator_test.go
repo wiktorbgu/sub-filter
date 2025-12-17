@@ -11,7 +11,6 @@ func TestGenericValidator_RequiredParams(t *testing.T) {
 		RequiredParams: []string{"sni", "encryption"},
 	}
 	v := &GenericValidator{Rule: rule}
-
 	tests := []struct {
 		name   string
 		params map[string]string
@@ -44,7 +43,6 @@ func TestGenericValidator_AllowedValues(t *testing.T) {
 		},
 	}
 	v := &GenericValidator{Rule: rule}
-
 	tests := []struct {
 		name   string
 		params map[string]string
@@ -77,7 +75,6 @@ func TestGenericValidator_ForbiddenValues(t *testing.T) {
 		},
 	}
 	v := &GenericValidator{Rule: rule}
-
 	tests := []struct {
 		name   string
 		params map[string]string
@@ -101,6 +98,57 @@ func TestGenericValidator_ForbiddenValues(t *testing.T) {
 	}
 }
 
+// TestGenericValidator_ForbiddenValuesPriority проверяет, что forbidden_values имеет приоритет над allowed_values.
+func TestGenericValidator_ForbiddenValuesPriority(t *testing.T) {
+	// Тест, подтверждающий, что forbidden_values имеет приоритет над allowed_values
+	// для одного и того же параметра.
+	rule := Rule{
+		AllowedValues: map[string][]string{
+			"security": {"tls", "reality"},
+		},
+		ForbiddenValues: map[string][]string{
+			"security": {"none"},
+		},
+	}
+	v := &GenericValidator{Rule: rule}
+	tests := []struct {
+		name   string
+		params map[string]string
+		valid  bool
+		reason string // Ожидаем сообщение от forbidden_values
+	}{
+		{
+			"forbidden value takes precedence over allowed list",
+			map[string]string{"security": "none"}, // "none" не в allowed, но ЗАПРЕЩЕНО
+			false,
+			"forbidden value for security", // forbidden_values срабатывает первым
+		},
+		{
+			"allowed value passes",
+			map[string]string{"security": "tls"}, // "tls" разрешено
+			true,
+			"",
+		},
+		{
+			"disallowed value fails (not forbidden)",
+			map[string]string{"security": "quic"}, // "quic" не разрешено
+			false,
+			"invalid value for security", // allowed_values срабатывает вторым
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := v.Validate(tt.params)
+			if result.Valid != tt.valid {
+				t.Errorf("Validate() = %v, want %v", result.Valid, tt.valid)
+			}
+			if !tt.valid && !stringsContains(result.Reason, tt.reason) {
+				t.Errorf("reason = %q, want contains %q", result.Reason, tt.reason)
+			}
+		})
+	}
+}
+
 func TestGenericValidator_Conditional(t *testing.T) {
 	rule := Rule{
 		Conditional: []Condition{
@@ -109,7 +157,6 @@ func TestGenericValidator_Conditional(t *testing.T) {
 		},
 	}
 	v := &GenericValidator{Rule: rule}
-
 	tests := []struct {
 		name   string
 		params map[string]string

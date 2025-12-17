@@ -2,7 +2,6 @@ package ss
 
 import (
 	"encoding/base64"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -11,16 +10,44 @@ import (
 )
 
 func loadRuleForTest(proto string) validator.Validator {
-	pwd, _ := filepath.Abs(".")
-	rulesPath := filepath.Join(pwd, "..", "config", "rules.yaml")
-	rules, err := validator.LoadRules(rulesPath)
-	if err != nil {
-		panic("Failed to load rules.yaml for tests: " + err.Error())
+	rules := map[string]validator.Rule{
+		"hysteria2": {
+			RequiredParams: []string{"obfs", "obfs-password"},
+			AllowedValues: map[string][]string{
+				"obfs": {"salamander"},
+			},
+		},
+		"vless": {
+			RequiredParams: []string{"encryption", "sni"},
+			ForbiddenValues: map[string][]string{
+				"security": {"none"},
+			},
+			AllowedValues: map[string][]string{
+				"security": {"tls", "reality"},
+			},
+			Conditional: []validator.Condition{
+				{When: map[string]string{"security": "reality"}, Require: []string{"pbk"}},
+				{When: map[string]string{"type": "grpc"}, Require: []string{"serviceName"}},
+				{When: map[string]string{"type": "ws"}, Require: []string{"path"}},
+			},
+		},
+		"vmess": {
+			RequiredParams: []string{"tls"},
+			AllowedValues: map[string][]string{
+				"tls": {"tls"},
+			},
+		},
+		"trojan": {
+			Conditional: []validator.Condition{
+				{When: map[string]string{"type": "grpc"}, Require: []string{"serviceName"}},
+			},
+		},
+		"ss": {}, // пустое правило
 	}
-	if v, ok := rules[proto]; ok {
-		return v
+	if rule, ok := rules[proto]; ok {
+		return &validator.GenericValidator{Rule: rule}
 	}
-	return &validator.EmptyValidator{}
+	return &validator.GenericValidator{}
 }
 
 func TestSSLink(t *testing.T) {

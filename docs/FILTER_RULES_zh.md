@@ -2,98 +2,72 @@
 
 此翻译由神经网络完成，如有任何错误，敬请谅解。
 
-# 代理验证规则（`rules.yaml`）
+# `rules.yaml` 文档
 
-`rules.yaml` 文件让您**无需重新编译代码**，就能灵活控制代理链接的过滤规则。  
-所有验证逻辑——包括哪些参数是必填的、哪些值被禁止、哪些参数之间存在依赖关系——现在都**只在这个文件中定义**。
+`rules.yaml` 文件就像给 `sub-filter` 程序的 **规则列表**。这些规则帮助程序判断哪些代理链接是 **好的**（需要保留），哪些是 **坏的**（需要删除）。
 
-> ⚠️ **注意**：如果某个协议**没有定义规则**，系统会使用一个**“空验证器”**，它会**允许所有配置**。  
-> 但**基础结构验证**（如主机地址、端口、UUID、密码）仍由程序内部执行，**无法关闭**。
+可以想象 `sub-filter` 就像一个 **水过滤器**，但它过滤的不是水，而是 **代理订阅列表**。`rules.yaml` 就是这个 **过滤器的说明书**，告诉它 “干净的水”（好的代理链接）应该具备什么样的特征。
 
----
+### 文件结构
 
-## 🧩 文件结构
+`rules.yaml` 文件被分成几个 **部分**。每一部分负责 **一种类型的代理**。主要类型有：
 
-```yaml
-<协议名称>:
-  required_params: [必填的查询参数列表]
-  allowed_values:
-    <参数名>: [允许的取值]
-  forbidden_values:
-    <参数名>: [禁止的取值]
-  conditional:
-    - when: { <参数名>: <值>, ... }
-      require: [在此条件下必须提供的参数列表]
-```
+*   `vless`
+*   `vmess`
+*   `trojan`
+*   `hysteria2`
+*   `ss` (Shadowsocks)
 
----
+在每个部分里，可能有 **四种规则**：
 
-## ✅ 支持的协议
+1.  **`required_params`** (必需参数)
+    *   这是一个 **参数列表**，这种类型的链接 **必须** 包含这些参数。
+    *   如果缺少任何一个必需参数，该链接就被认为是 **坏的**，会被删除。
+    *   例如：对于 `vless` 链接，通常 `encryption` 和 `sni` 是必需的。
+2.  **`allowed_values`** (允许的值)
+    *   这是 **特定参数** 的 **允许值** 列表。
+    *   如果某个参数的值 **不在允许列表中**，该链接就被认为是 **坏的**，会被删除。
+    *   例如：对于 `vless` 中的 `security` 参数，只允许 `tls` 和 `reality`。任何其他值，比如 `none`，都是不允许的。
+3.  **`forbidden_values`** (禁止的值)
+    *   这是 **特定参数** 的 **禁止值** 列表。
+    *   如果某个参数的值 **在禁止列表中**，该链接就被认为是 **坏的**，会被删除。
+    *   例如：以前 `security: ["none"]` 意味着 `security` 不能是 `none`。现在这个规则可能是 `conditional` 的一部分。
+4.  **`conditional`** (条件规则)
+    *   这些是 **复杂规则**，只有在满足某些 **特定条件** 时才会生效。
+    *   它们有一个 `when` 部分（“当……时候”）。如果 `when` 里的 **所有条件** 都满足了，那么规则的其余部分才会被应用。
+    *   例如：
+        *   `when: { security: "reality" } require: ["pbk"]` — **当** `security` 是 `reality` 时，**要求** 链接里必须有 `pbk` 参数。
+        *   `when: { type: "grpc" } require: ["serviceName"]` — **当** `type` (连接类型) 是 `grpc` 时，**要求** 链接里必须有 `serviceName` 参数。
+        *   `when: { type: { not: "ws" } } forbidden_values: { security: ["none"] }` — **当** `type` **不等于** `ws` 时，**禁止** `security` 是 `none`。(这个新规则只允许 `type=ws` 时使用 `security=none`)。
 
-### `vless`
-- **必填**：`encryption`、`sni`
-- **禁止**：`security=none`
-- **允许**：`security=tls` 或 `security=reality`
-- **流控（`flow`）**：仅在 `security=reality` 时可用
-- **条件依赖**：
-  - `security=reality` → 必须提供 `pbk`
-  - `type=grpc` → 必须提供 `serviceName`
-  - `type=ws|httpupgrade|xhttp` → 必须提供 `path`
-
-> 💡 `encryption` 字段为**向后兼容**而保留，尽管现代 VLESS 链接通常省略它。
-
-### `vmess`
-- **必填**：`tls=tls`
-- **条件**：若 `net=grpc` → 必须提供 `serviceName`
-- 其他字段（如 `add`、`id`、`port`）由程序内部验证
-
-### `hysteria2`
-- **必填**：`obfs`、`obfs-password`
-- **仅允许**：`obfs: salamander`
-- 此设计符合**公共订阅**的原始使用场景
-
-### `trojan`
-- **条件**：若 `type=grpc` → 必须提供 `serviceName`
-- 密码和主机地址由程序验证
-
-### `ss`（Shadowsocks）
-- 规则为空（`{}`），因为 Shadowsocks **不使用查询参数**
-- 所有验证（加密方式、密码、主机、端口）均在程序内部完成
-
----
-
-## 🔧 配置示例
-
-### 允许不含 `encryption` 的 VLESS（用于旧订阅）
+### 文件中的示例
 
 ```yaml
 vless:
-  required_params: [sni]  # 不再要求 encryption
+  required_params:
+    - encryption
+    - sni
   allowed_values:
     security: ["tls", "reality"]
+    flow:
+      - "xtls-rprx-vision"
+      - "xtls-rprx-vision-udp443"
+  conditional:
+    - when: { security: "reality" }
+      require: ["pbk"]
+    - when: { type: "grpc" }
+      require: ["serviceName"]
+    - when: { type: { not: "ws" } }
+      forbidden_values: { security: ["none"] }
 ```
 
-### 允许 `obfs=none` 的 Hysteria2（用于内网）
+**解释:**
 
-```yaml
-hysteria2:
-  required_params: [obfs]  # 当 obfs=none 时，obfs-password 非必需
-  allowed_values:
-    obfs: ["salamander", "none"]
-```
-
-> ⚠️ 如果允许 `obfs=none`，请确保您的处理程序**不要求 `obfs-password`** —— 当前实现中，该检查**仅通过规则策略执行**，因此上述配置会被接受。
-
----
-
-## 📂 使用方法
-
-1. 创建文件 `./config/rules.yaml`（参考 `./config/` 中的示例）
-2. 在主配置中指定路径：
-   ```yaml
-   rules_file: "./config/rules.yaml"
-   ```
-3. 启动时使用：`--config config.yaml`
-
-> 若未指定规则文件，程序将使用**内置默认规则**，但行为**可能不符合预期**。  
-> **强烈建议始终显式提供 `rules.yaml`**，以便完全掌控验证逻辑。
+1.  **对于所有 `vless` 链接:**
+    *   必须包含 `encryption` 和 `sni` 参数。
+    *   `security` 参数只能是 `tls` 或 `reality`。
+    *   `flow` 参数只能是 `xtls-rprx-vision` 或 `xtls-rprx-vision-udp443`。
+2.  **另外:**
+    *   如果 `security` 是 `reality`，那么 **必须** 有 `pbk` 参数。
+    *   如果 `type` 是 `grpc`，那么 **必须** 有 `serviceName` 参数。
+    *   **如果 `type` 不是 `ws`**，那么 `security` **不能** 是 `none`。

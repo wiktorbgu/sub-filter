@@ -1,13 +1,18 @@
+// internal/validator/generic.go
 package validator
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
+// <-- Убедиться, что импортирован
 type GenericValidator struct {
 	Rule Rule
 }
 
 func (gv *GenericValidator) Validate(params map[string]string) ValidationResult {
-	// 1. Обязательные параметры: проверяем существование ключа
+	// 1. Обязательные параметры (без изменений)
 	for _, param := range gv.Rule.RequiredParams {
 		if _, exists := params[param]; !exists {
 			return ValidationResult{
@@ -17,10 +22,33 @@ func (gv *GenericValidator) Validate(params map[string]string) ValidationResult 
 		}
 	}
 
-	// 2. Разрешённые значения
+	// 2. Запрещённые значения — регистронезависимые
+	for param, forbidden := range gv.Rule.ForbiddenValues {
+		if value, exists := params[param]; exists {
+			lowerValue := strings.ToLower(value)
+			for _, f := range forbidden {
+				if lowerValue == strings.ToLower(f) {
+					return ValidationResult{
+						Valid:  false,
+						Reason: fmt.Sprintf("forbidden value for %s: %q", param, value),
+					}
+				}
+			}
+		}
+	}
+
+	// 3. Разрешённые значения — регистронезависимые
 	for param, allowed := range gv.Rule.AllowedValues {
 		if value, exists := params[param]; exists {
-			if !contains(allowed, value) {
+			lowerValue := strings.ToLower(value)
+			found := false
+			for _, a := range allowed {
+				if lowerValue == strings.ToLower(a) {
+					found = true
+					break
+				}
+			}
+			if !found {
 				return ValidationResult{
 					Valid:  false,
 					Reason: fmt.Sprintf("invalid value for %s: %q (allowed: %v)", param, value, allowed),
@@ -29,19 +57,7 @@ func (gv *GenericValidator) Validate(params map[string]string) ValidationResult 
 		}
 	}
 
-	// 3. Запрещённые значения
-	for param, forbidden := range gv.Rule.ForbiddenValues {
-		if value, exists := params[param]; exists {
-			if contains(forbidden, value) {
-				return ValidationResult{
-					Valid:  false,
-					Reason: fmt.Sprintf("forbidden value for %s: %q", param, value),
-				}
-			}
-		}
-	}
-
-	// 4. Условные правила
+	// 4. Условные правила — ОСТАВЛЯЕМ чувствительными к регистру (т.к. это логические условия, а не пользовательский ввод)
 	for _, cond := range gv.Rule.Conditional {
 		match := true
 		for k, v := range cond.When {
@@ -63,13 +79,4 @@ func (gv *GenericValidator) Validate(params map[string]string) ValidationResult 
 	}
 
 	return ValidationResult{Valid: true}
-}
-
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
 }

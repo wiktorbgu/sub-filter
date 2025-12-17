@@ -1,6 +1,7 @@
+// main.go
 // Пакет main реализует утилиту для фильтрации прокси-подписок.
 // Поддерживает два режима работы:
-//   - HTTP-сервер для динамической фильтрации (/filter?id=1)
+//   - HTTP-сервер для динамической фильтрации (/filter?id=1&c=AD)
 //   - CLI-режим для однократной обработки всех подписок (--cli)
 package main
 
@@ -20,6 +21,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -61,16 +63,18 @@ type SafeSource struct {
 type SourceMap map[string]*SafeSource
 
 type AppConfig struct {
-	CacheDir     string
-	CacheTTL     time.Duration
-	SourcesFile  string
-	BadWordsFile string
-	UAgentFile   string
-	RulesFile    string
-	AllowedUA    []string
-	BadWords     []string
-	Sources      SourceMap
-	Rules        map[string]validator.Validator
+	CacheDir      string
+	CacheTTL      time.Duration
+	SourcesFile   string
+	BadWordsFile  string
+	UAgentFile    string
+	RulesFile     string
+	CountriesFile string // <-- Новый параметр
+	AllowedUA     []string
+	BadWords      []string
+	Sources       SourceMap
+	Rules         map[string]validator.Validator
+	Countries     map[string]utils.CountryInfo // <-- Новое поле
 }
 
 func (cfg *AppConfig) Init() {
@@ -88,6 +92,9 @@ func (cfg *AppConfig) Init() {
 	}
 	if cfg.UAgentFile == "" {
 		cfg.UAgentFile = "./config/uagent.txt"
+	}
+	if cfg.CountriesFile == "" { // <-- Установка значения по умолчанию
+		cfg.CountriesFile = "./config/countries.yaml"
 	}
 }
 
@@ -119,14 +126,12 @@ func createProxyProcessors(badWords []string, rules map[string]validator.Validat
 		}
 		return false, ""
 	}
-
 	getValidator := func(name string) validator.Validator {
 		if v, ok := rules[name]; ok {
 			return v
 		}
 		return &validator.GenericValidator{}
 	}
-
 	return []ProxyLink{
 		vless.NewVLESSLink(badWords, utils.IsValidHost, utils.IsValidPort, checkBadWords, getValidator("vless")),
 		vmess.NewVMessLink(badWords, utils.IsValidHost, checkBadWords, getValidator("vmess")),
@@ -278,7 +283,7 @@ func serveFile(w http.ResponseWriter, r *http.Request, content []byte, sourceURL
 func isLocalIP(ipStr string) bool {
 	ip := net.ParseIP(ipStr)
 	if ip == nil {
-		return true
+		return true // Treat invalid IP as local to block
 	}
 	if ip4 := ip.To4(); ip4 != nil {
 		ip = ip4
@@ -286,7 +291,259 @@ func isLocalIP(ipStr string) bool {
 	return ip.IsLoopback() || ip.IsPrivate()
 }
 
-func processSource(id string, source *SafeSource, cfg *AppConfig, proxyProcessors []ProxyLink, stdout bool) (string, error) {
+// --- НАЧАЛО НОВОГО КОДА ДЛЯ /merge ---
+
+func handleMerge(w http.ResponseWriter, r *http.Request, cfg *AppConfig, proxyProcessors []ProxyLink) {
+	clientIP, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if clientIP == "" {
+		clientIP = r.RemoteAddr
+	}
+	if !isLocalIP(clientIP) {
+		limiter := getLimiter(clientIP)
+		if !limiter.Allow() {
+			http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+			return
+		}
+	}
+
+	if !isValidUserAgent(r.Header.Get("User-Agent"), cfg.AllowedUA) {
+		http.Error(w, "Forbidden: invalid User-Agent", http.StatusForbidden)
+		return
+	}
+
+	// Get list of IDs from the 'ids' query parameter
+	idList := r.URL.Query()["ids"]
+	if len(idList) == 0 {
+		// Also try 'id' for potential compatibility, but prefer 'ids'
+		idList = r.URL.Query()["id"]
+	}
+	if len(idList) == 0 {
+		http.Error(w, "Missing 'ids' parameter", http.StatusBadRequest)
+		return
+	}
+
+	// Limit the number of IDs to prevent abuse
+	if len(idList) > 20 { // Example limit
+		http.Error(w, "Too many IDs requested", http.StatusBadRequest)
+		return
+	}
+
+	// Validate each ID
+	for _, id := range idList {
+		if id == "" || len(id) > maxIDLength || !validIDRe.MatchString(id) {
+			http.Error(w, fmt.Sprintf("Invalid id: %s", id), http.StatusBadRequest)
+			return
+		}
+		if _, exists := cfg.Sources[id]; !exists {
+			http.Error(w, fmt.Sprintf("Unknown id: %s", id), http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Sort IDs for consistent cache key generation
+	sortedIDs := make([]string, len(idList))
+	copy(sortedIDs, idList)
+	sort.Strings(sortedIDs)
+	mergeCacheKey := "merge_" + strings.Join(sortedIDs, "_")
+
+	// --- НОВОЕ: Извлечение кода страны ---
+	countryCode := strings.ToUpper(r.URL.Query().Get("c")) // Приводим к верхнему регистру
+	if countryCode != "" {
+		// Проверяем, существует ли код страны в загруженной мапе
+		if _, exists := cfg.Countries[countryCode]; !exists {
+			http.Error(w, fmt.Sprintf("Unknown country code: %s", countryCode), http.StatusBadRequest)
+			return
+		}
+		// Добавляем код страны к ключу кэша
+		mergeCacheKey += "_" + strings.ToLower(countryCode)
+	}
+	// --- КОНЕЦ НОВОГО ---
+
+	// Check cache for merged result
+	cacheFilePath := filepath.Join(cfg.CacheDir, mergeCacheKey+".txt")
+	if info, err := os.Stat(cacheFilePath); err == nil && time.Since(info.ModTime()) <= cfg.CacheTTL {
+		content, _ := os.ReadFile(cacheFilePath)
+		serveFile(w, r, content, "merged_sources", mergeCacheKey)
+		return
+	}
+
+	// Process each source concurrently
+	g, ctx := errgroup.WithContext(context.Background())
+	results := make([]string, len(idList))
+	var mu sync.Mutex // Mutex to protect results slice during concurrent writes
+
+	for i, id := range idList {
+		i, id := i, id // Capture loop variables
+		g.Go(func() error {
+			// Ensure the goroutine respects context cancellation
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+
+			source, exists := cfg.Sources[id]
+			if !exists {
+				// Should not happen due to validation above, but just in case
+				return fmt.Errorf("source not found during processing for id: %s", id)
+			}
+			// --- ПЕРЕДАЕМ КОД СТРАНЫ В processSource ---
+			result, err := processSource(id, source, cfg, proxyProcessors, false, countryCode)
+			// ---
+			if err != nil {
+				return fmt.Errorf("error processing source id '%s': %w", id, err)
+			}
+			// Store result in the correct index
+			mu.Lock()
+			results[i] = result
+			mu.Unlock()
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		http.Error(w, fmt.Sprintf("Processing error during merge: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// --- Combine and Deduplicate ---
+	uniqueLinks := make(map[string]string) // key -> best_line
+
+	for _, result := range results {
+		lines := strings.Split(result, "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			key, err := utils.NormalizeLinkKey(line) // Используем функцию из utils
+			if err != nil {
+				// Логируем ошибку или пропускаем неправильную строку, но не прерываем весь процесс
+				continue
+			}
+
+			if existingLine, ok := uniqueLinks[key]; ok {
+				// Найден дубликат, выбираем лучшую версию
+				betterLine := utils.CompareAndSelectBetter(line, existingLine) // Используем функцию из utils
+				uniqueLinks[key] = betterLine
+			} else {
+				// Новая уникальная ссылка
+				uniqueLinks[key] = line
+			}
+		}
+	}
+
+	// Извлекаем финальные строки без дубликатов
+	finalLines := make([]string, 0, len(uniqueLinks))
+	for _, line := range uniqueLinks {
+		finalLines = append(finalLines, line)
+	}
+	// Опционально: сортируем финальные строки для детерминированного вывода
+	sort.Strings(finalLines)
+
+	// --- Generate Output ---
+	profileName := "merged_" + strings.Join(sortedIDs, "_")
+	if countryCode != "" {
+		profileName += "_" + countryCode
+	}
+	profileTitle := fmt.Sprintf("#profile-title: %s", profileName)
+	// Calculate update interval (e.g., minimum TTL from sources, or use default)
+	profileInterval := fmt.Sprintf("#profile-update-interval: %d", int(cfg.CacheTTL.Seconds()/3600)) // Hours
+
+	finalContent := strings.Join(append([]string{profileTitle, profileInterval, ""}, finalLines...), "\n")
+
+	// Save to cache atomically
+	tmpFile := cacheFilePath + ".tmp"
+	if err := os.WriteFile(tmpFile, []byte(finalContent), 0o644); err != nil {
+		// Log error, but proceed to serve the content
+		fmt.Fprintf(os.Stderr, "Warning: Failed to write cache file: %v\n", err)
+	} else {
+		_ = os.Rename(tmpFile, cacheFilePath) // Atomic rename
+	}
+
+	serveFile(w, r, []byte(finalContent), "merged_sources", mergeCacheKey)
+}
+
+// --- КОНЕЦ НОВОГО КОДА ДЛЯ /merge ---
+
+// --- НОВАЯ ЛОГИКА: Получение строк для фильтрации по стране ---
+// getCountryFilterStrings возвращает список строк (CCA3, Flag, Name), которые нужно искать
+// в фрагменте имени прокси-ссылки для заданного кода страны.
+// Возвращает пустой слайс, если код страны не найден.
+func getCountryFilterStrings(countryCode string, countryMap map[string]utils.CountryInfo) []string {
+	if countryCode == "" {
+		return []string{} // Если код страны не указан, фильтрация не применяется
+	}
+
+	info, exists := countryMap[countryCode]
+	if !exists {
+		return []string{} // Если код страны не найден в мапе, фильтрация не применяется
+	}
+
+	var searchTerms []string
+
+	// 1. CCA3
+	if info.CCA3 != "" {
+		searchTerms = append(searchTerms, info.CCA3)
+	}
+	// 2. Flag
+	if info.Flag != "" {
+		searchTerms = append(searchTerms, info.Flag)
+	}
+	// 3. Name (Common и Official)
+	if info.Name.Common != "" {
+		searchTerms = append(searchTerms, info.Name.Common)
+	}
+	if info.Name.Official != "" {
+		searchTerms = append(searchTerms, info.Name.Official)
+	}
+	// 4. NativeName (Common и Official для всех языков)
+	for _, nativeInfo := range info.NativeName {
+		if nativeInfo.Common != "" {
+			searchTerms = append(searchTerms, nativeInfo.Common)
+		}
+		if nativeInfo.Official != "" {
+			searchTerms = append(searchTerms, nativeInfo.Official)
+		}
+	}
+
+	// Удаляем дубликаты (например, если Common и Official совпадают)
+	seen := make(map[string]bool)
+	var uniqueSearchTerms []string
+	for _, term := range searchTerms {
+		// Приведение к нижнему регистру для регистронезависимого сравнения
+		lowerTerm := strings.ToLower(term)
+		if !seen[lowerTerm] {
+			seen[lowerTerm] = true
+			uniqueSearchTerms = append(uniqueSearchTerms, term) // Сохраняем оригинальную строку
+		}
+	}
+
+	return uniqueSearchTerms
+}
+
+// --- НОВАЯ ФУНКЦИЯ: Проверка фрагмента на совпадение со строками страны ---
+// isFragmentMatchingCountry проверяет, содержит ли фрагмент (якорь #...) какие-либо из строк фильтрации страны.
+// Сравнение регистронезависимое.
+func isFragmentMatchingCountry(fragment string, filterStrings []string) bool {
+	if len(filterStrings) == 0 {
+		return true // Если нет строк для фильтрации, всё подходит (режим "всё" или пустой код)
+	}
+	decodedFragment := utils.FullyDecode(fragment)
+	lowerDecodedFragment := strings.ToLower(decodedFragment)
+
+	for _, searchTerm := range filterStrings {
+		// Проверяем, содержит ли фрагмент имя/флаг/код страны (регистронезависимо)
+		if strings.Contains(lowerDecodedFragment, strings.ToLower(searchTerm)) {
+			return true
+		}
+	}
+	return false
+}
+
+// --- КОНЕЦ НОВЫХ ФУНКЦИЙ ---
+
+func processSource(id string, source *SafeSource, cfg *AppConfig, proxyProcessors []ProxyLink, stdout bool, countryCode string) (string, error) { // <-- Добавлен countryCode
 	parsedSource, err := url.Parse(source.URL)
 	if err != nil || parsedSource.Host == "" {
 		return "", fmt.Errorf("invalid source URL")
@@ -298,6 +555,15 @@ func processSource(id string, source *SafeSource, cfg *AppConfig, proxyProcessor
 	origCache := filepath.Join(cfg.CacheDir, "orig_"+id+".txt")
 	modCache := filepath.Join(cfg.CacheDir, "mod_"+id+".txt")
 	rejectedCache := filepath.Join(cfg.CacheDir, "rejected_"+id+".txt")
+	// Include countryCode in cache filenames for country-specific caching
+	cacheSuffix := ""
+	if countryCode != "" {
+		cacheSuffix = "_" + strings.ToLower(countryCode)
+	}
+	modCache = strings.TrimSuffix(modCache, ".txt") + cacheSuffix + ".txt"
+	origCache = strings.TrimSuffix(origCache, ".txt") + cacheSuffix + ".txt"
+	rejectedCache = strings.TrimSuffix(rejectedCache, ".txt") + cacheSuffix + ".txt"
+
 	if !utils.IsPathSafe(origCache, cfg.CacheDir) ||
 		!utils.IsPathSafe(modCache, cfg.CacheDir) ||
 		!utils.IsPathSafe(rejectedCache, cfg.CacheDir) {
@@ -382,10 +648,10 @@ func processSource(id string, source *SafeSource, cfg *AppConfig, proxyProcessor
 			origContent = decoded
 		}
 	}
+
 	var out []string
 	var rejectedLines []string
 	rejectedLines = append(rejectedLines, "## Source: "+source.URL)
-
 	lines := bytes.Split(origContent, []byte("\n"))
 	for _, lineBytes := range lines {
 		originalLine := strings.TrimRight(string(lineBytes), "\r\n")
@@ -405,6 +671,28 @@ func processSource(id string, source *SafeSource, cfg *AppConfig, proxyProcessor
 			reason = "unsupported protocol"
 		}
 		if processedLine != "" {
+			// --- НОВАЯ ЛОГИКА: Фильтрация по стране ---
+			if countryCode != "" {
+				// Извлекаем фрагмент (якорь) из обработанной строки
+				parsedProcessed, parseErr := url.Parse(processedLine)
+				if parseErr == nil && parsedProcessed.Fragment != "" {
+					// Получаем строки для поиска из мапы стран
+					countryFilterStrings := getCountryFilterStrings(countryCode, cfg.Countries)
+					// Проверяем, соответствует ли фрагмент строкам страны
+					if !isFragmentMatchingCountry(parsedProcessed.Fragment, countryFilterStrings) {
+						// Если не соответствует, пропускаем эту строку
+						continue
+					}
+				} else {
+					// Если обработанная строка не является валидным URL, или фрагмент отсутствует,
+					// невозможно проверить страну. Решение: либо пропустить, либо обработать.
+					// В большинстве случаев обработанная строка будет валидным URL.
+					// Если parseErr != nil, continue.
+					// Если parsedProcessed.Fragment == "", continue.
+					continue
+				}
+			}
+			// --- КОНЕЦ НОВОЙ ЛОГИКИ ---
 			out = append(out, processedLine)
 		} else {
 			if reason == "" {
@@ -434,6 +722,9 @@ func processSource(id string, source *SafeSource, cfg *AppConfig, proxyProcessor
 		updateInterval = 1
 	}
 	profileTitle := fmt.Sprintf("#profile-title: %s filtered %s", profileName, id)
+	if countryCode != "" {
+		profileTitle += " (" + countryCode + ")" // Добавляем код страны к заголовку профиля
+	}
 	profileInterval := fmt.Sprintf("#profile-update-interval: %d", updateInterval)
 	finalLines := []string{profileTitle, profileInterval, ""}
 	finalLines = append(finalLines, out...)
@@ -495,6 +786,8 @@ func loadConfigFromFile(configPath string) (*AppConfig, error) {
 	if err := viper.Unmarshal(&cfg); err != nil {
 		return nil, err
 	}
+	// Init вызывается ПОСЛЕ viper.Unmarshal, чтобы установить значения по умолчанию
+	// только если они не были загружены из файла.
 	cfg.Init()
 	if len(cfg.Sources) == 0 {
 		sources, err := loadSourcesFromFile(cfg.SourcesFile)
@@ -517,78 +810,194 @@ func loadConfigFromFile(configPath string) (*AppConfig, error) {
 		return nil, err
 	}
 	cfg.Rules = rules
+
+	// --- НОВАЯ ЛОГИКА: Загрузка стран ---
+	countries, err := loadCountriesFromFile(cfg.CountriesFile)
+	if err != nil {
+		// Логируем ошибку, но не прерываем загрузку конфига, если файл не обязателен
+		fmt.Fprintf(os.Stderr, "Warning: Failed to load countries file %s: %v\n", cfg.CountriesFile, err)
+		// Или можно сделать файл обязательным и вернуть ошибку:
+		// return nil, fmt.Errorf("failed to load countries file: %w", err)
+		cfg.Countries = make(map[string]utils.CountryInfo) // Инициализируем пустую мапу
+	} else {
+		cfg.Countries = countries
+	}
+	// --- КОНЕЦ НОВОЙ ЛОГИКИ ---
+
 	return &cfg, nil
+}
+
+// loadCountriesFromFile загружает страны из YAML-файла.
+func loadCountriesFromFile(countriesFile string) (map[string]utils.CountryInfo, error) {
+	if countriesFile == "" {
+		return make(map[string]utils.CountryInfo), nil
+	}
+	viper.SetConfigFile(countriesFile)
+	ext := filepath.Ext(countriesFile)
+	if ext == ".yaml" || ext == ".yml" {
+		viper.SetConfigType("yaml")
+	}
+	if err := viper.ReadInConfig(); err != nil {
+		return nil, err
+	}
+	var countries map[string]utils.CountryInfo
+	if err := viper.Unmarshal(&countries); err != nil {
+		return nil, err
+	}
+	return countries, nil
+}
+
+// loadConfigFromArgsOrFile загружает конфигурацию из указанного файла или из аргументов командной строки.
+// Если файл не существует, используется логика аргументов.
+func loadConfigFromArgsOrFile(configPath, defaultConfigPath string, args []string) (*AppConfig, error) {
+	var cfg *AppConfig
+	var err error
+
+	// Проверяем, существует ли файл по указанному (или дефолтному) пути
+	if _, statErr := os.Stat(configPath); statErr == nil {
+		// Файл существует, загружаем его
+		cfg, err = loadConfigFromFile(configPath)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// Файл не существует, используем аргументы командной строки
+		if len(args) < 1 {
+			return nil, fmt.Errorf("Usage: <port> [cache_ttl] [sources] [bad] [ua] [rules]")
+		}
+		// port := args[0] // <-- Теперь port используется только для проверки валидности
+		cacheTTLSeconds := 1800
+		sourcesFile := "./config/sub.txt"
+		badWordsFile := "./config/bad.txt"
+		uagentFile := "./config/uagent.txt"
+		rulesFile := "" // По умолчанию пусто
+
+		if len(args) >= 2 {
+			if sec, err := strconv.Atoi(args[1]); err == nil && sec > 0 {
+				cacheTTLSeconds = sec
+			}
+		}
+		if len(args) >= 3 {
+			sourcesFile = args[2]
+		}
+		if len(args) >= 4 {
+			badWordsFile = args[3]
+		}
+		if len(args) >= 5 {
+			uagentFile = args[4]
+		}
+		if len(args) >= 6 {
+			rulesFile = args[5] // Только если явно передан 6-й аргумент
+		}
+
+		cfg = &AppConfig{
+			CacheDir:     defaultCacheDir, // <-- Используем defaultCacheDir (на основе os.TempDir()) по умолчанию
+			CacheTTL:     time.Duration(cacheTTLSeconds) * time.Second,
+			SourcesFile:  sourcesFile,
+			BadWordsFile: badWordsFile,
+			UAgentFile:   uagentFile,
+			RulesFile:    rulesFile, // Может быть пустым
+		}
+		cfg.Init() // <-- Вызываем Init, чтобы установить значения по умолчанию, если нужно
+
+		// Загружаем источники, bad words, ua из файлов
+		cfg.Sources, err = loadSourcesFromFile(cfg.SourcesFile)
+		if err != nil {
+			return nil, err
+		}
+		cfg.BadWords, _ = loadTextFile(cfg.BadWordsFile, strings.ToLower)
+		cfg.AllowedUA, _ = loadTextFile(cfg.UAgentFile, nil)
+
+		// Загружаем правила (теперь в одном месте)
+		cfg.Rules, err = loadRulesOrDefault(cfg.RulesFile)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return cfg, nil
+}
+
+// printRulesInfo выводит информацию о загруженных правилах.
+func printRulesInfo(cfg *AppConfig) {
+	rulesFileToPrint := cfg.RulesFile
+	if rulesFileToPrint == "" {
+		rulesFileToPrint = "./config/rules.yaml" // Отображаем путь по умолчанию, если не был явно указан
+	}
+
+	if cfg.RulesFile != "" || len(cfg.Rules) > 0 { // Проверяем, был ли файл реально загружен
+		// Подсчитываем количество правил для каждого протокола
+		ruleCounts := make(map[string]int)
+		for proto, val := range cfg.Rules {
+			if gv, ok := val.(*validator.GenericValidator); ok {
+				count := 0
+				r := gv.Rule
+				count += len(r.RequiredParams)
+				count += len(r.AllowedValues)
+				count += len(r.ForbiddenValues)
+				count += len(r.Conditional)
+				ruleCounts[proto] = count
+			}
+		}
+		fmt.Printf("Rules file: %s\n", rulesFileToPrint)
+		fmt.Printf("Loaded rules for protocols: %d\n", len(cfg.Rules))
+		for proto, count := range ruleCounts {
+			fmt.Printf("  - %s: %d rules\n", proto, count)
+		}
+	} else {
+		fmt.Printf("Rules file: %s (not found or empty, using empty validators)\n", rulesFileToPrint)
+	}
+}
+
+// loadRulesOrDefault загружает правила из cfg.RulesFile. Если файл не указан или не найден,
+// использует './config/rules.yaml'.
+func loadRulesOrDefault(rulesFile string) (map[string]validator.Validator, error) {
+	finalRulesFile := rulesFile
+	if finalRulesFile == "" {
+		finalRulesFile = "./config/rules.yaml"
+	}
+	return validator.LoadRules(finalRulesFile)
 }
 
 func main() {
 	var (
-		cliMode = flag.Bool("cli", false, "Run in CLI mode")
-		stdout  = flag.Bool("stdout", false, "Print results to stdout (CLI only)")
-		config  = flag.String("config", "", "Path to config file (YAML/JSON/TOML)")
+		cliMode   = flag.Bool("cli", false, "Run in CLI mode")
+		stdout    = flag.Bool("stdout", false, "Print results to stdout (CLI only)")
+		config    = flag.String("config", "", "Path to config file (YAML/JSON/TOML). Defaults to ./config/config.yaml if not specified.")
+		countries = flag.Bool("countries", false, "Generate ./config/countries.yaml from REST API (CLI only)") // <-- Новый флаг
+
 	)
 	flag.Parse()
+
+	// --- НОВАЯ ЛОГИКА: Установка пути к config.yaml по умолчанию ---
+	defaultConfigPath := "./config/config.yaml"
+	if *config == "" {
+		*config = defaultConfigPath
+	}
+	// --- КОНЕЦ НОВОЙ ЛОГИКИ ---
+
 	if *cliMode {
+
+		if *countries {
+			utils.GenerateCountries() // Вызываем функцию из utils
+			return
+		}
+
 		var cfg *AppConfig
 		var err error
-		if *config != "" {
-			cfg, err = loadConfigFromFile(*config)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
-				os.Exit(1)
-			}
-		} else {
-			cacheTTLSeconds := 1800
-			sourcesFile := "./config/sub.txt"
-			badWordsFile := "./config/bad.txt"
-			uagentFile := "./config/uagent.txt"
-			rulesFile := "./config/rules.yaml"
-			args := flag.Args()
-			if len(args) >= 1 {
-				if sec, e := strconv.Atoi(args[0]); e == nil && sec > 0 {
-					cacheTTLSeconds = sec
-				}
-			}
-			if len(args) >= 2 {
-				sourcesFile = args[1]
-			}
-			if len(args) >= 3 {
-				badWordsFile = args[2]
-			}
-			if len(args) >= 4 {
-				uagentFile = args[3]
-			}
-			if len(args) >= 5 {
-				rulesFile = args[4]
-			}
-			cfg = &AppConfig{
-				CacheTTL:     time.Duration(cacheTTLSeconds) * time.Second,
-				SourcesFile:  sourcesFile,
-				BadWordsFile: badWordsFile,
-				UAgentFile:   uagentFile,
-				RulesFile:    rulesFile,
-			}
-			cfg.Init()
-			cfg.Sources, err = loadSourcesFromFile(cfg.SourcesFile)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Load sources: %v\n", err)
-				os.Exit(1)
-			}
-			cfg.BadWords, _ = loadTextFile(cfg.BadWordsFile, strings.ToLower)
-			cfg.AllowedUA, _ = loadTextFile(cfg.UAgentFile, nil)
-			rules, err := validator.LoadRules(rulesFile)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Load rules: %v\n", err)
-				os.Exit(1)
-			}
-			cfg.Rules = rules
+
+		// Загрузка конфигурации из файла или аргументов командной строки
+		cfg, err = loadConfigFromArgsOrFile(*config, defaultConfigPath, flag.Args())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
+			os.Exit(1)
 		}
+
+		// Убедимся, что директория кэша существует
 		if err := os.MkdirAll(cfg.CacheDir, 0o755); err != nil {
 			fmt.Fprintf(os.Stderr, "Create cache dir: %v\n", err)
 			os.Exit(1)
 		}
-
 		fmt.Fprintf(os.Stderr, "Cache directory: %s\n", cfg.CacheDir)
-
 		proxyProcessors := createProxyProcessors(cfg.BadWords, cfg.Rules)
 		g, _ := errgroup.WithContext(context.Background())
 		var mu sync.Mutex
@@ -596,7 +1005,9 @@ func main() {
 		for id, source := range cfg.Sources {
 			id, source := id, source
 			g.Go(func() error {
-				result, err := processSource(id, source, cfg, proxyProcessors, *stdout)
+				// CLI режим: не поддерживает фильтрацию по стране напрямую через аргументы
+				// Можно добавить флаг, но для простоты оставим countryCode пустым
+				result, err := processSource(id, source, cfg, proxyProcessors, *stdout, "") // <-- countryCode = ""
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Process failed %s: %v\n", id, err)
 					return nil
@@ -619,65 +1030,45 @@ func main() {
 		}
 		return
 	}
+
+	// --- НОВАЯ ЛОГИКА: Загрузка конфигурации для сервера ---
+	var cfg *AppConfig
+	var err error
+
+	// Извлекаем порт из аргументов командной строки для сервера
 	if len(flag.Args()) < 1 {
 		fmt.Fprintf(os.Stderr, "Usage: %s <port> [cache_ttl] [sources] [bad] [ua] [rules]\n", os.Args[0])
 		os.Exit(1)
 	}
-	port := flag.Args()[0]
-	cacheTTLSeconds := 1800
-	sourcesFile := "./config/sub.txt"
-	badWordsFile := "./config/bad.txt"
-	uagentFile := "./config/uagent.txt"
-	rulesFile := ""
-	if len(flag.Args()) >= 2 {
-		if sec, err := strconv.Atoi(flag.Args()[1]); err == nil && sec > 0 {
-			cacheTTLSeconds = sec
-		}
+	port := flag.Args()[0] // <-- Объявляем и используем port здесь
+
+	// Загрузка конфигурации из файла или аргументов командной строки
+	cfg, err = loadConfigFromArgsOrFile(*config, defaultConfigPath, flag.Args())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
+		os.Exit(1)
 	}
-	if len(flag.Args()) >= 3 {
-		sourcesFile = flag.Args()[2]
-	}
-	if len(flag.Args()) >= 4 {
-		badWordsFile = flag.Args()[3]
-	}
-	if len(flag.Args()) >= 5 {
-		uagentFile = flag.Args()[4]
-	}
-	if len(flag.Args()) >= 6 {
-		rulesFile = flag.Args()[5]
-	}
-	cfg := &AppConfig{
-		CacheDir:     defaultCacheDir,
-		CacheTTL:     time.Duration(cacheTTLSeconds) * time.Second,
-		SourcesFile:  sourcesFile,
-		BadWordsFile: badWordsFile,
-		UAgentFile:   uagentFile,
-		RulesFile:    rulesFile,
-	}
-	cfg.Init()
+
+	// Убедимся, что директория кэша существует
 	if err := os.MkdirAll(cfg.CacheDir, 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "Create cache dir: %v\n", err)
 		os.Exit(1)
 	}
-	var err error
-	cfg.Sources, err = loadSourcesFromFile(cfg.SourcesFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Load sources: %v\n", err)
-		os.Exit(1)
-	}
-	cfg.BadWords, _ = loadTextFile(cfg.BadWordsFile, strings.ToLower)
-	cfg.AllowedUA, _ = loadTextFile(cfg.UAgentFile, nil)
-	rules, err := validator.LoadRules(rulesFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Load rules: %v\n", err)
-		os.Exit(1)
-	}
-	cfg.Rules = rules
 
+	// --- ВЫВОД ИНФОРМАЦИИ О КОЛИЧЕСТВЕ ЗАГРУЖЕННЫХ СТРАН ---
+	fmt.Printf("Countries loaded: %d\n", len(cfg.Countries))
+	// --- КОНЕЦ ВЫВОДА ---
+
+	// Создание процессоров и остальной код...
 	proxyProcessors := createProxyProcessors(cfg.BadWords, cfg.Rules)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go cleanupLimiters(ctx)
+
+	// --- ВЫВОД ИНФОРМАЦИИ О ПРАВИЛАХ (теперь всегда будет выполнен) ---
+	printRulesInfo(cfg)
+	// --- КОНЕЦ ВЫВОДА ---
+
 	http.HandleFunc("/filter", func(w http.ResponseWriter, r *http.Request) {
 		clientIP, _, _ := net.SplitHostPort(r.RemoteAddr)
 		if clientIP == "" {
@@ -695,6 +1086,16 @@ func main() {
 			return
 		}
 		id := r.URL.Query().Get("id")
+		// --- НОВОЕ: Извлечение countryCode ---
+		countryCode := strings.ToUpper(r.URL.Query().Get("c")) // Приводим к верхнему регистру
+		if countryCode != "" {
+			// Проверяем, существует ли код страны в загруженной мапе
+			if _, exists := cfg.Countries[countryCode]; !exists {
+				http.Error(w, fmt.Sprintf("Unknown country code: %s", countryCode), http.StatusBadRequest)
+				return
+			}
+		}
+		// --- КОНЕЦ НОВОГО ---
 		if id == "" || len(id) > maxIDLength || !validIDRe.MatchString(id) {
 			http.Error(w, "Invalid id", http.StatusBadRequest)
 			return
@@ -704,25 +1105,37 @@ func main() {
 			http.Error(w, "Invalid id", http.StatusBadRequest)
 			return
 		}
-		if _, err := processSource(id, source, cfg, proxyProcessors, false); err != nil {
+		// --- ИЗМЕНЕНО: Передача countryCode в processSource ---
+		if _, err := processSource(id, source, cfg, proxyProcessors, false, countryCode); err != nil {
 			http.Error(w, fmt.Sprintf("Processing error: %v", err), http.StatusInternalServerError)
 			return
 		}
-		content, err := os.ReadFile(filepath.Join(cfg.CacheDir, "mod_"+id+".txt"))
+		// --- ИЗМЕНЕНО: Имя файла кэша теперь зависит от countryCode ---
+		cacheFileName := "mod_" + id + ".txt"
+		if countryCode != "" {
+			cacheFileName = strings.TrimSuffix(cacheFileName, ".txt") + "_" + strings.ToLower(countryCode) + ".txt"
+		}
+		content, err := os.ReadFile(filepath.Join(cfg.CacheDir, cacheFileName))
 		if err != nil {
 			http.Error(w, "Result not found", http.StatusNotFound)
 			return
 		}
 		serveFile(w, r, content, source.URL, id)
 	})
-	listener, err := net.Listen("tcp", ":"+port)
+
+	// Add the new /merge handler
+	http.HandleFunc("/merge", func(w http.ResponseWriter, r *http.Request) {
+		handleMerge(w, r, cfg, proxyProcessors)
+	})
+
+	listener, err := net.Listen("tcp", ":"+port) // <-- Теперь используем объявленную переменную port
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Listen: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Printf("Proxy Filter Server Starting...\n")
-	fmt.Printf("Port: %s\n", port)
-	fmt.Printf("Cache TTL: %d sec\n", cacheTTLSeconds)
+	fmt.Printf("Port: %s\n", port) // <-- Теперь используем объявленную переменную port
+	fmt.Printf("Cache TTL: %d sec\n", cfg.CacheTTL/time.Second)
 	fmt.Printf("Cache dir: %s\n", cfg.CacheDir)
 	fmt.Printf("Sources: %d\n", len(cfg.Sources))
 	server := &http.Server{

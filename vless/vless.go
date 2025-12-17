@@ -1,3 +1,4 @@
+// Package vless обрабатывает VLESS-ссылки (vless://).
 package vless
 
 import (
@@ -10,6 +11,7 @@ import (
 	"sub-filter/internal/validator"
 )
 
+// VLESSLink реализует обработку VLESS-ссылок.
 type VLESSLink struct {
 	badWords       []string
 	isValidHost    func(string) bool
@@ -20,6 +22,8 @@ type VLESSLink struct {
 	base64UrlRegex *regexp.Regexp
 }
 
+// NewVLESSLink создаёт новый обработчик VLESS.
+// Принимает валидатор политик — если nil, используется пустой GenericValidator.
 func NewVLESSLink(
 	bw []string,
 	vh func(string) bool,
@@ -41,10 +45,12 @@ func NewVLESSLink(
 	}
 }
 
+// Matches проверяет, является ли строка VLESS-ссылкой.
 func (v *VLESSLink) Matches(s string) bool {
 	return strings.HasPrefix(strings.ToLower(s), "vless://")
 }
 
+// Process парсит, валидирует и нормализует VLESS-ссылку.
 func (v *VLESSLink) Process(s string) (string, string) {
 	const maxURILength = 4096
 	const maxIDLength = 64
@@ -81,6 +87,22 @@ func (v *VLESSLink) Process(s string) (string, string) {
 			params[k] = vs[0]
 		}
 	}
+
+	// --- НОВАЯ ЛОГИКА: Установка значения по умолчанию для 'type' ---
+	// Если параметр 'type' отсутствует в URL, устанавливаем его в "raw" (синоним "tcp").
+	// Это позволяет политике из rules.yaml корректно обрабатывать отсутствие type как type=raw.
+	//if _, exists := params["type"]; !exists {
+	//	params["type"] = "tcp"
+	//}
+	// --- КОНЕЦ НОВОЙ ЛОГИКИ ---
+
+	// --- НОВАЯ ЛОГИКА ---
+	// Если параметр 'security' отсутствует в URL, добавляем его со значением 'none'
+	// Это позволяет политике из rules.yaml корректно обрабатывать отсутствие security
+	if _, exists := params["security"]; !exists {
+		params["security"] = "none"
+	}
+	// --- КОНЕЦ НОВОЙ ЛОГИКИ ---
 
 	// Валидация теперь полностью делегирована политике
 	if result := v.ruleValidator.Validate(params); !result.Valid {
@@ -130,6 +152,7 @@ func (v *VLESSLink) Process(s string) (string, string) {
 	return buf.String(), ""
 }
 
+// validateVLESSHostPort извлекает и проверяет хост и порт.
 func (v *VLESSLink) validateVLESSHostPort(u *url.URL) (string, int, string) {
 	host := u.Hostname()
 	portStr := u.Port()

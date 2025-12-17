@@ -2,100 +2,74 @@
 
 This translation was made using AI.
 
-# Proxy Validation Rules (`rules.yaml`)
+# Documentation for `rules.yaml`
 
-The `rules.yaml` file lets you **flexibly control proxy filtering rules without recompiling the code**.  
-All validation logic — including required parameters, forbidden values, and conditional dependencies — is now defined **exclusively in this file**.
+The `rules.yaml` file is like a **list of rules** for the `sub-filter` program. These rules help the program decide which proxy links are **good** (and should be kept) and which are **bad** (and should be removed).
 
-> ⚠️ **Important**: If no policy is defined for a protocol, a **"null validator"** is used, which **allows everything**.  
-> However, **basic structural validation** (host, port, UUID, password) remains hardcoded and **cannot be disabled**.
+Think of `sub-filter` as a **water filter**, but instead of filtering water, it filters **proxy subscription lists**. `rules.yaml` is the **instruction manual for the filter**, telling it what characteristics "clean water" (good proxy links) should have.
 
----
+### File Structure
 
-## 🧩 General Structure
+The `rules.yaml` file is divided into **sections**. Each section is responsible for **one type of proxy**. Here are the main types:
 
-```yaml
-<protocol>:
-  required_params: [list of mandatory query parameters]
-  allowed_values:
-    <parameter>: [allowed values]
-  forbidden_values:
-    <parameter>: [forbidden values]
-  conditional:
-    - when: { <parameter>: <value>, ... }
-      require: [parameters required under this condition]
-```
+*   `vless`
+*   `vmess`
+*   `trojan`
+*   `hysteria2`
+*   `ss` (Shadowsocks)
 
----
+Within each section, there can be **four kinds of rules**:
 
-## ✅ Supported Protocols
+1.  **`required_params`** (Required Parameters)
+    *   This is a list of **parameters** that **must** be present in a link of this type.
+    *   If any required parameter is **missing**, the link is considered **bad** and is removed.
+    *   Example: For `vless`, `encryption` and `sni` are often required.
+2.  **`allowed_values`** (Allowed Values)
+    *   This is a list of **allowed** values for **specific parameters**.
+    *   If a parameter's value is **not in the allowed list**, the link is considered **bad** and is removed.
+    *   Example: For the `security` parameter in `vless`, only `tls` and `reality` are allowed. Any other value, like `none`, is forbidden.
+3.  **`forbidden_values`** (Forbidden Values)
+    *   This is a list of **forbidden** values for **specific parameters**.
+    *   If a parameter's value is **in the forbidden list**, the link is considered **bad** and is removed.
+    *   Example: Previously, `security: ["none"]` meant `security` could not be `none`. Now this rule might be part of `conditional`.
+4.  **`conditional`** (Conditional Rules)
+    *   These are **complex rules** that apply **only under certain conditions**.
+    *   They have a `when` part ("when"). If **all conditions** in `when` are met, then the rest of the rule is applied.
+    *   Examples:
+        *   `when: { security: "reality" } require: ["pbk"]` — **When** `security` is `reality`, **require** the `pbk` parameter to be present.
+        *   `when: { type: "grpc" } require: ["serviceName"]` — **When** `type` (connection type) is `grpc`, **require** the `serviceName` parameter to be present.
+        *   `when: { type: { not: "ws" } } forbidden_values: { security: ["none"] }` — **When** `type` is **NOT** `ws`, **forbid** `security` from being `none`. (This new rule allows `security=none` only for `type=ws`).
 
-### `vless`
-- **Required**: `encryption`, `sni`
-- **Forbidden**: `security=none`
-- **Allowed**: `security=tls|reality`
-- **`flow` values**: only permitted when `security=reality`
-- **Conditional rules**:
-  - `security=reality` → requires `pbk`
-  - `type=grpc` → requires `serviceName`
-  - `type=ws|httpupgrade|xhttp` → requires `path`
-
-> 💡 The `encryption` field is retained for **backward compatibility**, even though modern VLESS links often omit it.
-
-### `vmess`
-- **Required**: `tls=tls`
-- **Conditional**: if `net=grpc` → requires `serviceName`
-- Note: other fields (`add`, `id`, `port`) are validated at the code level
-
-### `hysteria2`
-- **Required**: `obfs`, `obfs-password`
-- **Allowed only**: `obfs: salamander`
-- This aligns with the **original design intent** for public subscriptions
-
-### `trojan`
-- **Conditional**: if `type=grpc` → requires `serviceName`
-- Password and host are validated in code
-
-### `ss` (Shadowsocks)
-- Policy is **empty** (`{}`), as Shadowsocks **does not use query parameters**
-- All validation (cipher, password, host, port) is handled in code
-
----
-
-## 🔧 Configuration Examples
-
-### Allow VLESS without `encryption` (for legacy subscriptions)
+### Example from the file
 
 ```yaml
 vless:
-  required_params: [sni]  # removed 'encryption'
+  required_params:
+    - encryption
+    - sni
   allowed_values:
     security: ["tls", "reality"]
+    flow:
+      - "xtls-rprx-vision"
+      - "xtls-rprx-vision-udp443"
+  conditional:
+    - when: { security: "reality" }
+      require: ["pbk"]
+    - when: { type: "grpc" }
+      require: ["serviceName"]
+    - when: { type: { not: "ws" } }
+      forbidden_values: { security: ["none"] }
 ```
 
-### Allow Hysteria2 with `obfs=none` (for internal networks)
+**Explanation:**
 
-```yaml
-hysteria2:
-  required_params: [obfs]  # 'obfs-password' not required when obfs=none
-  allowed_values:
-    obfs: ["salamander", "none"]
-```
-
-> ⚠️ If you allow `obfs=none`, ensure your handler **does not require `obfs-password`** — in the current implementation, this is **only enforced via policy**, so the configuration will be accepted.
-
----
-
-## 📂 How to Use
-
-1. Create `./config/rules.yaml` (see example in `./config/`)
-2. Reference it in your main config:
-   ```yaml
-   rules_file: "./config/rules.yaml"
-   ```
-3. Launch with `--config config.yaml`
-
-> If no file is specified, **built-in defaults** are used — but behavior **may differ** from expectations.  
-> **It is strongly recommended to always provide an explicit `rules.yaml`** for predictable and controllable validation.
+1.  **For all `vless` links:**
+    *   The parameters `encryption` and `sni` must be present.
+    *   The `security` parameter can only be `tls` or `reality`.
+    *   The `flow` parameter can only be `xtls-rprx-vision` or `xtls-rprx-vision-udp443`.
+2.  **Additionally:**
+    *   If `security` is `reality`, then the `pbk` parameter **must** be present.
+    *   If `type` is `grpc`, then the `serviceName` parameter **must** be present.
+    *   **If `type` is NOT `ws`**, then `security` **cannot** be `none`.
 
 ---

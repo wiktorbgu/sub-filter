@@ -45,6 +45,7 @@ func (s *SSLink) Matches(sLink string) bool {
 func (s *SSLink) Process(sLink string) (string, string) {
 	const maxURILength = 4096
 	const maxUserinfoLength = 1024
+	const maxSSPasswordBytes = 256 // ← новая константа
 	if len(sLink) > maxURILength {
 		return "", "line too long"
 	}
@@ -65,7 +66,7 @@ func (s *SSLink) Process(sLink string) (string, string) {
 		return "", "invalid cipher:password format"
 	}
 	cipher, password := parts[0], parts[1]
-	if cipher == "" || password == "" || !s.ssCipherRe.MatchString(cipher) {
+	if cipher == "" || password == "" || len(password) > maxSSPasswordBytes || !s.ssCipherRe.MatchString(cipher) {
 		return "", "invalid cipher or password"
 	}
 	host, port, ok := s.parseHostPort(u)

@@ -1,7 +1,7 @@
+// package vless
 package vless
 
 import (
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -9,15 +9,43 @@ import (
 	"sub-filter/internal/validator"
 )
 
-func loadTestValidator(proto string) validator.Validator {
-	pwd, _ := filepath.Abs(".")
-	rulesPath := filepath.Join(pwd, "..", "config", "rules.yaml")
-	rules, err := validator.LoadRules(rulesPath)
-	if err != nil {
-		panic("Failed to load rules.yaml for tests: " + err.Error())
+func loadRuleForTest(proto string) validator.Validator {
+	rules := map[string]validator.Rule{
+		"hysteria2": {
+			RequiredParams: []string{"obfs", "obfs-password"},
+			AllowedValues: map[string][]string{
+				"obfs": {"salamander"},
+			},
+		},
+		"vless": {
+			RequiredParams: []string{"encryption", "sni"},
+			ForbiddenValues: map[string][]string{
+				"security": {"none"},
+			},
+			AllowedValues: map[string][]string{
+				"security": {"tls", "reality"},
+			},
+			Conditional: []validator.Condition{
+				{When: map[string]string{"security": "reality"}, Require: []string{"pbk"}},
+				{When: map[string]string{"type": "grpc"}, Require: []string{"serviceName"}},
+				{When: map[string]string{"type": "ws"}, Require: []string{"path"}},
+			},
+		},
+		"vmess": {
+			RequiredParams: []string{"tls"},
+			AllowedValues: map[string][]string{
+				"tls": {"tls"},
+			},
+		},
+		"trojan": {
+			Conditional: []validator.Condition{
+				{When: map[string]string{"type": "grpc"}, Require: []string{"serviceName"}},
+			},
+		},
+		"ss": {}, // пустое правило
 	}
-	if v, ok := rules[proto]; ok {
-		return v
+	if rule, ok := rules[proto]; ok {
+		return &validator.GenericValidator{Rule: rule}
 	}
 	return &validator.GenericValidator{}
 }
@@ -37,8 +65,7 @@ func TestVLESSLink(t *testing.T) {
 		}
 		return false, ""
 	}
-	link := NewVLESSLink(badWords, utils.IsValidHost, utils.IsValidPort, checkBadWords, loadTestValidator("vless"))
-
+	link := NewVLESSLink(badWords, utils.IsValidHost, utils.IsValidPort, checkBadWords, loadRuleForTest("vless"))
 	tests := []struct {
 		name   string
 		input  string
@@ -46,14 +73,14 @@ func TestVLESSLink(t *testing.T) {
 		reason string
 	}{
 		{
-			"valid",
-			"vless://12345678-1234-1234-1234-123456789abc@example.com:443?security=tls&sni=example.com&encryption=mlkem768x25519plus#my-server",
+			"valid with security",
+			"vless://12345678-1234-1234-1234-123456789abc@example.com:443?security=tls&sni=example.com&encryption=none#my-server",
 			true,
 			"",
 		},
 		{
-			"valid with ws",
-			"vless://12345678-1234-1234-1234-123456789abc@example.com:443?security=tls&sni=example.com&encryption=mlkem768x25519plus&type=ws&path=%2Fwebsocket#my-server",
+			"valid with ws and security",
+			"vless://12345678-1234-1234-1234-123456789abc@example.com:443?security=tls&sni=example.com&encryption=none&type=ws&path=%2Fwebsocket#my-server",
 			true,
 			"",
 		},
@@ -65,7 +92,7 @@ func TestVLESSLink(t *testing.T) {
 		},
 		{
 			"missing sni",
-			"vless://12345678-1234-1234-1234-123456789abc@example.com:443?security=tls&encryption=mlkem768x25519plus",
+			"vless://12345678-1234-1234-1234-123456789abc@example.com:443?security=tls&encryption=none",
 			false,
 			"missing required parameter: sni",
 		},
@@ -82,11 +109,31 @@ func TestVLESSLink(t *testing.T) {
 			"bad word",
 		},
 		{
-			"security=none",
+			"explicit security=none",
 			"vless://12345678-1234-1234-1234-123456789abc@example.com:443?security=none&sni=example.com&encryption=none",
 			false,
-			"invalid value for security",
+			"forbidden value for security", // <-- Изменено: ожидаем forbidden, так как forbidden_values теперь раньше
 		},
+		// --- Новые/Обновлённые тесты ---
+		{
+			"missing security, default none (should be blocked by forbidden_values)",
+			"vless://12345678-1234-1234-1234-123456789abc@example.com:443?sni=example.com&encryption=none&type=tcp",
+			false,
+			"forbidden value for security", // Ожидаем, что отфильтруется из-за security=none
+		},
+		{
+			"missing security, default none, with type ws (should be blocked by forbidden_values first)",
+			"vless://12345678-1234-1234-1234-123456789abc@example.com:443?sni=example.com&encryption=none&type=ws", // path отсутствует
+			false,
+			"forbidden value for security", // forbidden_values сработает первым, так как security=none
+		},
+		{
+			"missing security, default none, with type ws and path (should be blocked by forbidden_values)",
+			"vless://12345678-1234-1234-1234-123456789abc@example.com:443?sni=example.com&encryption=none&type=ws&path=%2Fws", // path есть
+			false,
+			"forbidden value for security", // forbidden_values для security=none сработает
+		},
+		// --- Конец новых/обновлённых тестов ---
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -97,7 +144,7 @@ func TestVLESSLink(t *testing.T) {
 				}
 			} else {
 				if got != "" {
-					t.Errorf("expected invalid, got result")
+					t.Errorf("expected invalid, got result: %q", got)
 				}
 				if !strings.Contains(reason, tt.reason) {
 					t.Errorf("reason = %q, want contains %q", reason, tt.reason)

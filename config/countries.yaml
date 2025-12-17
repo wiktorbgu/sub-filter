@@ -1,0 +1,1000 @@
+AD:
+    cca3: AND
+    flag: "\U0001F1E6\U0001F1E9"
+    name: Andorra
+AE:
+    cca3: ARE
+    flag: "\U0001F1E6\U0001F1EA"
+    name: United Arab Emirates
+AF:
+    cca3: AFG
+    flag: "\U0001F1E6\U0001F1EB"
+    name: Afghanistan
+AG:
+    cca3: ATG
+    flag: "\U0001F1E6\U0001F1EC"
+    name: Antigua and Barbuda
+AI:
+    cca3: AIA
+    flag: "\U0001F1E6\U0001F1EE"
+    name: Anguilla
+AL:
+    cca3: ALB
+    flag: "\U0001F1E6\U0001F1F1"
+    name: Albania
+AM:
+    cca3: ARM
+    flag: "\U0001F1E6\U0001F1F2"
+    name: Armenia
+AO:
+    cca3: AGO
+    flag: "\U0001F1E6\U0001F1F4"
+    name: Angola
+AQ:
+    cca3: ATA
+    flag: "\U0001F1E6\U0001F1F6"
+    name: Antarctica
+AR:
+    cca3: ARG
+    flag: "\U0001F1E6\U0001F1F7"
+    name: Argentina
+AS:
+    cca3: ASM
+    flag: "\U0001F1E6\U0001F1F8"
+    name: American Samoa
+AT:
+    cca3: AUT
+    flag: "\U0001F1E6\U0001F1F9"
+    name: Austria
+AU:
+    cca3: AUS
+    flag: "\U0001F1E6\U0001F1FA"
+    name: Australia
+AW:
+    cca3: ABW
+    flag: "\U0001F1E6\U0001F1FC"
+    name: Aruba
+AX:
+    cca3: ALA
+    flag: "\U0001F1E6\U0001F1FD"
+    name: Åland Islands
+AZ:
+    cca3: AZE
+    flag: "\U0001F1E6\U0001F1FF"
+    name: Azerbaijan
+BA:
+    cca3: BIH
+    flag: "\U0001F1E7\U0001F1E6"
+    name: Bosnia and Herzegovina
+BB:
+    cca3: BRB
+    flag: "\U0001F1E7\U0001F1E7"
+    name: Barbados
+BD:
+    cca3: BGD
+    flag: "\U0001F1E7\U0001F1E9"
+    name: Bangladesh
+BE:
+    cca3: BEL
+    flag: "\U0001F1E7\U0001F1EA"
+    name: Belgium
+BF:
+    cca3: BFA
+    flag: "\U0001F1E7\U0001F1EB"
+    name: Burkina Faso
+BG:
+    cca3: BGR
+    flag: "\U0001F1E7\U0001F1EC"
+    name: Bulgaria
+BH:
+    cca3: BHR
+    flag: "\U0001F1E7\U0001F1ED"
+    name: Bahrain
+BI:
+    cca3: BDI
+    flag: "\U0001F1E7\U0001F1EE"
+    name: Burundi
+BJ:
+    cca3: BEN
+    flag: "\U0001F1E7\U0001F1EF"
+    name: Benin
+BL:
+    cca3: BLM
+    flag: "\U0001F1E7\U0001F1F1"
+    name: Saint Barthélemy
+BM:
+    cca3: BMU
+    flag: "\U0001F1E7\U0001F1F2"
+    name: Bermuda
+BN:
+    cca3: BRN
+    flag: "\U0001F1E7\U0001F1F3"
+    name: Brunei
+BO:
+    cca3: BOL
+    flag: "\U0001F1E7\U0001F1F4"
+    name: Bolivia
+BQ:
+    cca3: BES
+    flag: "\U0001F1E7\U0001F1F6"
+    name: Caribbean Netherlands
+BR:
+    cca3: BRA
+    flag: "\U0001F1E7\U0001F1F7"
+    name: Brazil
+BS:
+    cca3: BHS
+    flag: "\U0001F1E7\U0001F1F8"
+    name: Bahamas
+BT:
+    cca3: BTN
+    flag: "\U0001F1E7\U0001F1F9"
+    name: Bhutan
+BV:
+    cca3: BVT
+    flag: "\U0001F1E7\U0001F1FB"
+    name: Bouvet Island
+BW:
+    cca3: BWA
+    flag: "\U0001F1E7\U0001F1FC"
+    name: Botswana
+BY:
+    cca3: BLR
+    flag: "\U0001F1E7\U0001F1FE"
+    name: Belarus
+BZ:
+    cca3: BLZ
+    flag: "\U0001F1E7\U0001F1FF"
+    name: Belize
+CA:
+    cca3: CAN
+    flag: "\U0001F1E8\U0001F1E6"
+    name: Canada
+CC:
+    cca3: CCK
+    flag: "\U0001F1E8\U0001F1E8"
+    name: Cocos (Keeling) Islands
+CD:
+    cca3: COD
+    flag: "\U0001F1E8\U0001F1E9"
+    name: DR Congo
+CF:
+    cca3: CAF
+    flag: "\U0001F1E8\U0001F1EB"
+    name: Central African Republic
+CG:
+    cca3: COG
+    flag: "\U0001F1E8\U0001F1EC"
+    name: Republic of the Congo
+CH:
+    cca3: CHE
+    flag: "\U0001F1E8\U0001F1ED"
+    name: Switzerland
+CI:
+    cca3: CIV
+    flag: "\U0001F1E8\U0001F1EE"
+    name: Ivory Coast
+CK:
+    cca3: COK
+    flag: "\U0001F1E8\U0001F1F0"
+    name: Cook Islands
+CL:
+    cca3: CHL
+    flag: "\U0001F1E8\U0001F1F1"
+    name: Chile
+CM:
+    cca3: CMR
+    flag: "\U0001F1E8\U0001F1F2"
+    name: Cameroon
+CN:
+    cca3: CHN
+    flag: "\U0001F1E8\U0001F1F3"
+    name: China
+CO:
+    cca3: COL
+    flag: "\U0001F1E8\U0001F1F4"
+    name: Colombia
+CR:
+    cca3: CRI
+    flag: "\U0001F1E8\U0001F1F7"
+    name: Costa Rica
+CU:
+    cca3: CUB
+    flag: "\U0001F1E8\U0001F1FA"
+    name: Cuba
+CV:
+    cca3: CPV
+    flag: "\U0001F1E8\U0001F1FB"
+    name: Cape Verde
+CW:
+    cca3: CUW
+    flag: "\U0001F1E8\U0001F1FC"
+    name: Curaçao
+CX:
+    cca3: CXR
+    flag: "\U0001F1E8\U0001F1FD"
+    name: Christmas Island
+CY:
+    cca3: CYP
+    flag: "\U0001F1E8\U0001F1FE"
+    name: Cyprus
+CZ:
+    cca3: CZE
+    flag: "\U0001F1E8\U0001F1FF"
+    name: Czechia
+DE:
+    cca3: DEU
+    flag: "\U0001F1E9\U0001F1EA"
+    name: Germany
+DJ:
+    cca3: DJI
+    flag: "\U0001F1E9\U0001F1EF"
+    name: Djibouti
+DK:
+    cca3: DNK
+    flag: "\U0001F1E9\U0001F1F0"
+    name: Denmark
+DM:
+    cca3: DMA
+    flag: "\U0001F1E9\U0001F1F2"
+    name: Dominica
+DO:
+    cca3: DOM
+    flag: "\U0001F1E9\U0001F1F4"
+    name: Dominican Republic
+DZ:
+    cca3: DZA
+    flag: "\U0001F1E9\U0001F1FF"
+    name: Algeria
+EC:
+    cca3: ECU
+    flag: "\U0001F1EA\U0001F1E8"
+    name: Ecuador
+EE:
+    cca3: EST
+    flag: "\U0001F1EA\U0001F1EA"
+    name: Estonia
+EG:
+    cca3: EGY
+    flag: "\U0001F1EA\U0001F1EC"
+    name: Egypt
+EH:
+    cca3: ESH
+    flag: "\U0001F1EA\U0001F1ED"
+    name: Western Sahara
+ER:
+    cca3: ERI
+    flag: "\U0001F1EA\U0001F1F7"
+    name: Eritrea
+ES:
+    cca3: ESP
+    flag: "\U0001F1EA\U0001F1F8"
+    name: Spain
+ET:
+    cca3: ETH
+    flag: "\U0001F1EA\U0001F1F9"
+    name: Ethiopia
+FI:
+    cca3: FIN
+    flag: "\U0001F1EB\U0001F1EE"
+    name: Finland
+FJ:
+    cca3: FJI
+    flag: "\U0001F1EB\U0001F1EF"
+    name: Fiji
+FK:
+    cca3: FLK
+    flag: "\U0001F1EB\U0001F1F0"
+    name: Falkland Islands
+FM:
+    cca3: FSM
+    flag: "\U0001F1EB\U0001F1F2"
+    name: Micronesia
+FO:
+    cca3: FRO
+    flag: "\U0001F1EB\U0001F1F4"
+    name: Faroe Islands
+FR:
+    cca3: FRA
+    flag: "\U0001F1EB\U0001F1F7"
+    name: France
+GA:
+    cca3: GAB
+    flag: "\U0001F1EC\U0001F1E6"
+    name: Gabon
+GB:
+    cca3: GBR
+    flag: "\U0001F1EC\U0001F1E7"
+    name: United Kingdom
+GD:
+    cca3: GRD
+    flag: "\U0001F1EC\U0001F1E9"
+    name: Grenada
+GE:
+    cca3: GEO
+    flag: "\U0001F1EC\U0001F1EA"
+    name: Georgia
+GF:
+    cca3: GUF
+    flag: "\U0001F1EC\U0001F1EB"
+    name: French Guiana
+GG:
+    cca3: GGY
+    flag: "\U0001F1EC\U0001F1EC"
+    name: Guernsey
+GH:
+    cca3: GHA
+    flag: "\U0001F1EC\U0001F1ED"
+    name: Ghana
+GI:
+    cca3: GIB
+    flag: "\U0001F1EC\U0001F1EE"
+    name: Gibraltar
+GL:
+    cca3: GRL
+    flag: "\U0001F1EC\U0001F1F1"
+    name: Greenland
+GM:
+    cca3: GMB
+    flag: "\U0001F1EC\U0001F1F2"
+    name: Gambia
+GN:
+    cca3: GIN
+    flag: "\U0001F1EC\U0001F1F3"
+    name: Guinea
+GP:
+    cca3: GLP
+    flag: "\U0001F1EC\U0001F1F5"
+    name: Guadeloupe
+GQ:
+    cca3: GNQ
+    flag: "\U0001F1EC\U0001F1F6"
+    name: Equatorial Guinea
+GR:
+    cca3: GRC
+    flag: "\U0001F1EC\U0001F1F7"
+    name: Greece
+GS:
+    cca3: SGS
+    flag: "\U0001F1EC\U0001F1F8"
+    name: South Georgia
+GT:
+    cca3: GTM
+    flag: "\U0001F1EC\U0001F1F9"
+    name: Guatemala
+GU:
+    cca3: GUM
+    flag: "\U0001F1EC\U0001F1FA"
+    name: Guam
+GW:
+    cca3: GNB
+    flag: "\U0001F1EC\U0001F1FC"
+    name: Guinea-Bissau
+GY:
+    cca3: GUY
+    flag: "\U0001F1EC\U0001F1FE"
+    name: Guyana
+HK:
+    cca3: HKG
+    flag: "\U0001F1ED\U0001F1F0"
+    name: Hong Kong
+HM:
+    cca3: HMD
+    flag: "\U0001F1ED\U0001F1F2"
+    name: Heard Island and McDonald Islands
+HN:
+    cca3: HND
+    flag: "\U0001F1ED\U0001F1F3"
+    name: Honduras
+HR:
+    cca3: HRV
+    flag: "\U0001F1ED\U0001F1F7"
+    name: Croatia
+HT:
+    cca3: HTI
+    flag: "\U0001F1ED\U0001F1F9"
+    name: Haiti
+HU:
+    cca3: HUN
+    flag: "\U0001F1ED\U0001F1FA"
+    name: Hungary
+ID:
+    cca3: IDN
+    flag: "\U0001F1EE\U0001F1E9"
+    name: Indonesia
+IE:
+    cca3: IRL
+    flag: "\U0001F1EE\U0001F1EA"
+    name: Ireland
+IL:
+    cca3: ISR
+    flag: "\U0001F1EE\U0001F1F1"
+    name: Israel
+IM:
+    cca3: IMN
+    flag: "\U0001F1EE\U0001F1F2"
+    name: Isle of Man
+IN:
+    cca3: IND
+    flag: "\U0001F1EE\U0001F1F3"
+    name: India
+IO:
+    cca3: IOT
+    flag: "\U0001F1EE\U0001F1F4"
+    name: British Indian Ocean Territory
+IQ:
+    cca3: IRQ
+    flag: "\U0001F1EE\U0001F1F6"
+    name: Iraq
+IR:
+    cca3: IRN
+    flag: "\U0001F1EE\U0001F1F7"
+    name: Iran
+IS:
+    cca3: ISL
+    flag: "\U0001F1EE\U0001F1F8"
+    name: Iceland
+IT:
+    cca3: ITA
+    flag: "\U0001F1EE\U0001F1F9"
+    name: Italy
+JE:
+    cca3: JEY
+    flag: "\U0001F1EF\U0001F1EA"
+    name: Jersey
+JM:
+    cca3: JAM
+    flag: "\U0001F1EF\U0001F1F2"
+    name: Jamaica
+JO:
+    cca3: JOR
+    flag: "\U0001F1EF\U0001F1F4"
+    name: Jordan
+JP:
+    cca3: JPN
+    flag: "\U0001F1EF\U0001F1F5"
+    name: Japan
+KE:
+    cca3: KEN
+    flag: "\U0001F1F0\U0001F1EA"
+    name: Kenya
+KG:
+    cca3: KGZ
+    flag: "\U0001F1F0\U0001F1EC"
+    name: Kyrgyzstan
+KH:
+    cca3: KHM
+    flag: "\U0001F1F0\U0001F1ED"
+    name: Cambodia
+KI:
+    cca3: KIR
+    flag: "\U0001F1F0\U0001F1EE"
+    name: Kiribati
+KM:
+    cca3: COM
+    flag: "\U0001F1F0\U0001F1F2"
+    name: Comoros
+KN:
+    cca3: KNA
+    flag: "\U0001F1F0\U0001F1F3"
+    name: Saint Kitts and Nevis
+KP:
+    cca3: PRK
+    flag: "\U0001F1F0\U0001F1F5"
+    name: North Korea
+KR:
+    cca3: KOR
+    flag: "\U0001F1F0\U0001F1F7"
+    name: South Korea
+KW:
+    cca3: KWT
+    flag: "\U0001F1F0\U0001F1FC"
+    name: Kuwait
+KY:
+    cca3: CYM
+    flag: "\U0001F1F0\U0001F1FE"
+    name: Cayman Islands
+KZ:
+    cca3: KAZ
+    flag: "\U0001F1F0\U0001F1FF"
+    name: Kazakhstan
+LA:
+    cca3: LAO
+    flag: "\U0001F1F1\U0001F1E6"
+    name: Laos
+LB:
+    cca3: LBN
+    flag: "\U0001F1F1\U0001F1E7"
+    name: Lebanon
+LC:
+    cca3: LCA
+    flag: "\U0001F1F1\U0001F1E8"
+    name: Saint Lucia
+LI:
+    cca3: LIE
+    flag: "\U0001F1F1\U0001F1EE"
+    name: Liechtenstein
+LK:
+    cca3: LKA
+    flag: "\U0001F1F1\U0001F1F0"
+    name: Sri Lanka
+LR:
+    cca3: LBR
+    flag: "\U0001F1F1\U0001F1F7"
+    name: Liberia
+LS:
+    cca3: LSO
+    flag: "\U0001F1F1\U0001F1F8"
+    name: Lesotho
+LT:
+    cca3: LTU
+    flag: "\U0001F1F1\U0001F1F9"
+    name: Lithuania
+LU:
+    cca3: LUX
+    flag: "\U0001F1F1\U0001F1FA"
+    name: Luxembourg
+LV:
+    cca3: LVA
+    flag: "\U0001F1F1\U0001F1FB"
+    name: Latvia
+LY:
+    cca3: LBY
+    flag: "\U0001F1F1\U0001F1FE"
+    name: Libya
+MA:
+    cca3: MAR
+    flag: "\U0001F1F2\U0001F1E6"
+    name: Morocco
+MC:
+    cca3: MCO
+    flag: "\U0001F1F2\U0001F1E8"
+    name: Monaco
+MD:
+    cca3: MDA
+    flag: "\U0001F1F2\U0001F1E9"
+    name: Moldova
+ME:
+    cca3: MNE
+    flag: "\U0001F1F2\U0001F1EA"
+    name: Montenegro
+MF:
+    cca3: MAF
+    flag: "\U0001F1F2\U0001F1EB"
+    name: Saint Martin
+MG:
+    cca3: MDG
+    flag: "\U0001F1F2\U0001F1EC"
+    name: Madagascar
+MH:
+    cca3: MHL
+    flag: "\U0001F1F2\U0001F1ED"
+    name: Marshall Islands
+MK:
+    cca3: MKD
+    flag: "\U0001F1F2\U0001F1F0"
+    name: North Macedonia
+ML:
+    cca3: MLI
+    flag: "\U0001F1F2\U0001F1F1"
+    name: Mali
+MM:
+    cca3: MMR
+    flag: "\U0001F1F2\U0001F1F2"
+    name: Myanmar
+MN:
+    cca3: MNG
+    flag: "\U0001F1F2\U0001F1F3"
+    name: Mongolia
+MO:
+    cca3: MAC
+    flag: "\U0001F1F2\U0001F1F4"
+    name: Macau
+MP:
+    cca3: MNP
+    flag: "\U0001F1F2\U0001F1F5"
+    name: Northern Mariana Islands
+MQ:
+    cca3: MTQ
+    flag: "\U0001F1F2\U0001F1F6"
+    name: Martinique
+MR:
+    cca3: MRT
+    flag: "\U0001F1F2\U0001F1F7"
+    name: Mauritania
+MS:
+    cca3: MSR
+    flag: "\U0001F1F2\U0001F1F8"
+    name: Montserrat
+MT:
+    cca3: MLT
+    flag: "\U0001F1F2\U0001F1F9"
+    name: Malta
+MU:
+    cca3: MUS
+    flag: "\U0001F1F2\U0001F1FA"
+    name: Mauritius
+MV:
+    cca3: MDV
+    flag: "\U0001F1F2\U0001F1FB"
+    name: Maldives
+MW:
+    cca3: MWI
+    flag: "\U0001F1F2\U0001F1FC"
+    name: Malawi
+MX:
+    cca3: MEX
+    flag: "\U0001F1F2\U0001F1FD"
+    name: Mexico
+MY:
+    cca3: MYS
+    flag: "\U0001F1F2\U0001F1FE"
+    name: Malaysia
+MZ:
+    cca3: MOZ
+    flag: "\U0001F1F2\U0001F1FF"
+    name: Mozambique
+NA:
+    cca3: NAM
+    flag: "\U0001F1F3\U0001F1E6"
+    name: Namibia
+NC:
+    cca3: NCL
+    flag: "\U0001F1F3\U0001F1E8"
+    name: New Caledonia
+NE:
+    cca3: NER
+    flag: "\U0001F1F3\U0001F1EA"
+    name: Niger
+NF:
+    cca3: NFK
+    flag: "\U0001F1F3\U0001F1EB"
+    name: Norfolk Island
+NG:
+    cca3: NGA
+    flag: "\U0001F1F3\U0001F1EC"
+    name: Nigeria
+NI:
+    cca3: NIC
+    flag: "\U0001F1F3\U0001F1EE"
+    name: Nicaragua
+NL:
+    cca3: NLD
+    flag: "\U0001F1F3\U0001F1F1"
+    name: Netherlands
+"NO":
+    cca3: NOR
+    flag: "\U0001F1F3\U0001F1F4"
+    name: Norway
+NP:
+    cca3: NPL
+    flag: "\U0001F1F3\U0001F1F5"
+    name: Nepal
+NR:
+    cca3: NRU
+    flag: "\U0001F1F3\U0001F1F7"
+    name: Nauru
+NU:
+    cca3: NIU
+    flag: "\U0001F1F3\U0001F1FA"
+    name: Niue
+NZ:
+    cca3: NZL
+    flag: "\U0001F1F3\U0001F1FF"
+    name: New Zealand
+OM:
+    cca3: OMN
+    flag: "\U0001F1F4\U0001F1F2"
+    name: Oman
+PA:
+    cca3: PAN
+    flag: "\U0001F1F5\U0001F1E6"
+    name: Panama
+PE:
+    cca3: PER
+    flag: "\U0001F1F5\U0001F1EA"
+    name: Peru
+PF:
+    cca3: PYF
+    flag: "\U0001F1F5\U0001F1EB"
+    name: French Polynesia
+PG:
+    cca3: PNG
+    flag: "\U0001F1F5\U0001F1EC"
+    name: Papua New Guinea
+PH:
+    cca3: PHL
+    flag: "\U0001F1F5\U0001F1ED"
+    name: Philippines
+PK:
+    cca3: PAK
+    flag: "\U0001F1F5\U0001F1F0"
+    name: Pakistan
+PL:
+    cca3: POL
+    flag: "\U0001F1F5\U0001F1F1"
+    name: Poland
+PM:
+    cca3: SPM
+    flag: "\U0001F1F5\U0001F1F2"
+    name: Saint Pierre and Miquelon
+PN:
+    cca3: PCN
+    flag: "\U0001F1F5\U0001F1F3"
+    name: Pitcairn Islands
+PR:
+    cca3: PRI
+    flag: "\U0001F1F5\U0001F1F7"
+    name: Puerto Rico
+PS:
+    cca3: PSE
+    flag: "\U0001F1F5\U0001F1F8"
+    name: Palestine
+PT:
+    cca3: PRT
+    flag: "\U0001F1F5\U0001F1F9"
+    name: Portugal
+PW:
+    cca3: PLW
+    flag: "\U0001F1F5\U0001F1FC"
+    name: Palau
+PY:
+    cca3: PRY
+    flag: "\U0001F1F5\U0001F1FE"
+    name: Paraguay
+QA:
+    cca3: QAT
+    flag: "\U0001F1F6\U0001F1E6"
+    name: Qatar
+RE:
+    cca3: REU
+    flag: "\U0001F1F7\U0001F1EA"
+    name: Réunion
+RO:
+    cca3: ROU
+    flag: "\U0001F1F7\U0001F1F4"
+    name: Romania
+RS:
+    cca3: SRB
+    flag: "\U0001F1F7\U0001F1F8"
+    name: Serbia
+RU:
+    cca3: RUS
+    flag: "\U0001F1F7\U0001F1FA"
+    name: Russia
+RW:
+    cca3: RWA
+    flag: "\U0001F1F7\U0001F1FC"
+    name: Rwanda
+SA:
+    cca3: SAU
+    flag: "\U0001F1F8\U0001F1E6"
+    name: Saudi Arabia
+SB:
+    cca3: SLB
+    flag: "\U0001F1F8\U0001F1E7"
+    name: Solomon Islands
+SC:
+    cca3: SYC
+    flag: "\U0001F1F8\U0001F1E8"
+    name: Seychelles
+SD:
+    cca3: SDN
+    flag: "\U0001F1F8\U0001F1E9"
+    name: Sudan
+SE:
+    cca3: SWE
+    flag: "\U0001F1F8\U0001F1EA"
+    name: Sweden
+SG:
+    cca3: SGP
+    flag: "\U0001F1F8\U0001F1EC"
+    name: Singapore
+SH:
+    cca3: SHN
+    flag: "\U0001F1F8\U0001F1ED"
+    name: Saint Helena, Ascension and Tristan da Cunha
+SI:
+    cca3: SVN
+    flag: "\U0001F1F8\U0001F1EE"
+    name: Slovenia
+SJ:
+    cca3: SJM
+    flag: "\U0001F1F8\U0001F1EF"
+    name: Svalbard and Jan Mayen
+SK:
+    cca3: SVK
+    flag: "\U0001F1F8\U0001F1F0"
+    name: Slovakia
+SL:
+    cca3: SLE
+    flag: "\U0001F1F8\U0001F1F1"
+    name: Sierra Leone
+SM:
+    cca3: SMR
+    flag: "\U0001F1F8\U0001F1F2"
+    name: San Marino
+SN:
+    cca3: SEN
+    flag: "\U0001F1F8\U0001F1F3"
+    name: Senegal
+SO:
+    cca3: SOM
+    flag: "\U0001F1F8\U0001F1F4"
+    name: Somalia
+SR:
+    cca3: SUR
+    flag: "\U0001F1F8\U0001F1F7"
+    name: Suriname
+SS:
+    cca3: SSD
+    flag: "\U0001F1F8\U0001F1F8"
+    name: South Sudan
+ST:
+    cca3: STP
+    flag: "\U0001F1F8\U0001F1F9"
+    name: São Tomé and Príncipe
+SV:
+    cca3: SLV
+    flag: "\U0001F1F8\U0001F1FB"
+    name: El Salvador
+SX:
+    cca3: SXM
+    flag: "\U0001F1F8\U0001F1FD"
+    name: Sint Maarten
+SY:
+    cca3: SYR
+    flag: "\U0001F1F8\U0001F1FE"
+    name: Syria
+SZ:
+    cca3: SWZ
+    flag: "\U0001F1F8\U0001F1FF"
+    name: Eswatini
+TC:
+    cca3: TCA
+    flag: "\U0001F1F9\U0001F1E8"
+    name: Turks and Caicos Islands
+TD:
+    cca3: TCD
+    flag: "\U0001F1F9\U0001F1E9"
+    name: Chad
+TF:
+    cca3: ATF
+    flag: "\U0001F1F9\U0001F1EB"
+    name: French Southern and Antarctic Lands
+TG:
+    cca3: TGO
+    flag: "\U0001F1F9\U0001F1EC"
+    name: Togo
+TH:
+    cca3: THA
+    flag: "\U0001F1F9\U0001F1ED"
+    name: Thailand
+TJ:
+    cca3: TJK
+    flag: "\U0001F1F9\U0001F1EF"
+    name: Tajikistan
+TK:
+    cca3: TKL
+    flag: "\U0001F1F9\U0001F1F0"
+    name: Tokelau
+TL:
+    cca3: TLS
+    flag: "\U0001F1F9\U0001F1F1"
+    name: Timor-Leste
+TM:
+    cca3: TKM
+    flag: "\U0001F1F9\U0001F1F2"
+    name: Turkmenistan
+TN:
+    cca3: TUN
+    flag: "\U0001F1F9\U0001F1F3"
+    name: Tunisia
+TO:
+    cca3: TON
+    flag: "\U0001F1F9\U0001F1F4"
+    name: Tonga
+TR:
+    cca3: TUR
+    flag: "\U0001F1F9\U0001F1F7"
+    name: Turkey
+TT:
+    cca3: TTO
+    flag: "\U0001F1F9\U0001F1F9"
+    name: Trinidad and Tobago
+TV:
+    cca3: TUV
+    flag: "\U0001F1F9\U0001F1FB"
+    name: Tuvalu
+TW:
+    cca3: TWN
+    flag: "\U0001F1F9\U0001F1FC"
+    name: Taiwan
+TZ:
+    cca3: TZA
+    flag: "\U0001F1F9\U0001F1FF"
+    name: Tanzania
+UA:
+    cca3: UKR
+    flag: "\U0001F1FA\U0001F1E6"
+    name: Ukraine
+UG:
+    cca3: UGA
+    flag: "\U0001F1FA\U0001F1EC"
+    name: Uganda
+UM:
+    cca3: UMI
+    flag: "\U0001F1FA\U0001F1F2"
+    name: United States Minor Outlying Islands
+US:
+    cca3: USA
+    flag: "\U0001F1FA\U0001F1F8"
+    name: United States
+UY:
+    cca3: URY
+    flag: "\U0001F1FA\U0001F1FE"
+    name: Uruguay
+UZ:
+    cca3: UZB
+    flag: "\U0001F1FA\U0001F1FF"
+    name: Uzbekistan
+VA:
+    cca3: VAT
+    flag: "\U0001F1FB\U0001F1E6"
+    name: Vatican City
+VC:
+    cca3: VCT
+    flag: "\U0001F1FB\U0001F1E8"
+    name: Saint Vincent and the Grenadines
+VE:
+    cca3: VEN
+    flag: "\U0001F1FB\U0001F1EA"
+    name: Venezuela
+VG:
+    cca3: VGB
+    flag: "\U0001F1FB\U0001F1EC"
+    name: British Virgin Islands
+VI:
+    cca3: VIR
+    flag: "\U0001F1FB\U0001F1EE"
+    name: United States Virgin Islands
+VN:
+    cca3: VNM
+    flag: "\U0001F1FB\U0001F1F3"
+    name: Vietnam
+VU:
+    cca3: VUT
+    flag: "\U0001F1FB\U0001F1FA"
+    name: Vanuatu
+WF:
+    cca3: WLF
+    flag: "\U0001F1FC\U0001F1EB"
+    name: Wallis and Futuna
+WS:
+    cca3: WSM
+    flag: "\U0001F1FC\U0001F1F8"
+    name: Samoa
+XK:
+    cca3: UNK
+    flag: "\U0001F1FD\U0001F1F0"
+    name: Kosovo
+YE:
+    cca3: YEM
+    flag: "\U0001F1FE\U0001F1EA"
+    name: Yemen
+YT:
+    cca3: MYT
+    flag: "\U0001F1FE\U0001F1F9"
+    name: Mayotte
+ZA:
+    cca3: ZAF
+    flag: "\U0001F1FF\U0001F1E6"
+    name: South Africa
+ZM:
+    cca3: ZMB
+    flag: "\U0001F1FF\U0001F1F2"
+    name: Zambia
+ZW:
+    cca3: ZWE
+    flag: "\U0001F1FF\U0001F1FC"
+    name: Zimbabwe

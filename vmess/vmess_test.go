@@ -3,7 +3,6 @@ package vmess
 
 import (
 	"encoding/base64"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -15,16 +14,43 @@ func encodeJSON(s string) string {
 	return base64.StdEncoding.EncodeToString([]byte(s))
 }
 
-// loadTestValidator загружает политику из config/rules.yaml для тестов.
-func loadTestValidator(proto string) validator.Validator {
-	pwd, _ := filepath.Abs(".")
-	rulesPath := filepath.Join(pwd, "..", "config", "rules.yaml")
-	rules, err := validator.LoadRules(rulesPath)
-	if err != nil {
-		panic("Failed to load rules.yaml for tests: " + err.Error())
+func loadRuleForTest(proto string) validator.Validator {
+	rules := map[string]validator.Rule{
+		"hysteria2": {
+			RequiredParams: []string{"obfs", "obfs-password"},
+			AllowedValues: map[string][]string{
+				"obfs": {"salamander"},
+			},
+		},
+		"vless": {
+			RequiredParams: []string{"encryption", "sni"},
+			ForbiddenValues: map[string][]string{
+				"security": {"none"},
+			},
+			AllowedValues: map[string][]string{
+				"security": {"tls", "reality"},
+			},
+			Conditional: []validator.Condition{
+				{When: map[string]string{"security": "reality"}, Require: []string{"pbk"}},
+				{When: map[string]string{"type": "grpc"}, Require: []string{"serviceName"}},
+				{When: map[string]string{"type": "ws"}, Require: []string{"path"}},
+			},
+		},
+		"vmess": {
+			RequiredParams: []string{"tls"},
+			AllowedValues: map[string][]string{
+				"tls": {"tls"},
+			},
+		},
+		"trojan": {
+			Conditional: []validator.Condition{
+				{When: map[string]string{"type": "grpc"}, Require: []string{"serviceName"}},
+			},
+		},
+		"ss": {}, // пустое правило
 	}
-	if v, ok := rules[proto]; ok {
-		return v
+	if rule, ok := rules[proto]; ok {
+		return &validator.GenericValidator{Rule: rule}
 	}
 	return &validator.GenericValidator{}
 }
@@ -44,7 +70,7 @@ func TestVMessLink(t *testing.T) {
 		}
 		return false, ""
 	}
-	link := NewVMessLink(badWords, utils.IsValidHost, checkBadWords, loadTestValidator("vmess"))
+	link := NewVMessLink(badWords, utils.IsValidHost, checkBadWords, loadRuleForTest("vmess"))
 
 	// ВАЖНО: JSON без пробелов
 	validVMessJSON := `{"v":"2","ps":"my-server","add":"example.com","port":443,"id":"12345678-1234-1234-1234-123456789abc","aid":"0","net":"tcp","type":"none","host":"","path":"","tls":"tls"}`
