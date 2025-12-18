@@ -82,4 +82,8 @@ docker run -d \
 
 💡 **Tip**: Use `sub-filter` as a middleware between public subscriptions and your client — and forget about broken or misconfigured proxies!
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=viktor45/sub-filter&type=date&logscale&legend=top-left)](https://www.star-history.com/#viktor45/sub-filter&type=date&logscale&legend=top-left)
+
 </div>
