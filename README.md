@@ -6,7 +6,7 @@
 _VLESS · VMess · Trojan · Shadowsocks · Hysteria2_
 
 [![Go Version](https://img.shields.io/badge/Go-1.21%2B-blue?logo=go)](https://golang.org)
-[![License](https://img.shields.io/badge/License-GPL-green.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-АGPL3.0-green.svg)](LICENSE)
 [![Docker Image](https://img.shields.io/badge/Docker-ghcr.io%2Fviktor45%2Fsub--filter-blue?logo=docker)](https://github.com/viktor45/sub-filter/pkgs/container/sub-filter)
 [![GitHub Actions](https://img.shields.io/badge/CI-passing-brightgreen)](/actions)
 
