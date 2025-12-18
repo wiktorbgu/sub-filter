@@ -7,7 +7,7 @@ _VLESS · VMess · Trojan · Shadowsocks · Hysteria2_
 
 
 [![GitHub Release](https://img.shields.io/github/v/release/viktor45/sub-filter?style=flat&color=blue)](https://github.com/viktor45/sub-filter/releases/latest)
-![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/viktor45/sub-filter/ko-container.yaml?style=flat)
+[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/viktor45/sub-filter/ko-container.yaml?style=flat)](https://github.com/Viktor45/sub-filter/actions/workflows/ko-container.yaml)
 [![License](https://img.shields.io/badge/License-AGPLv3-green.svg)](LICENSE)
 [![Docker Image](https://img.shields.io/badge/Docker-ghcr.io%2Fviktor45%2Fsub--filter-blue?logo=docker)](https://github.com/viktor45/sub-filter/pkgs/container/sub-filter)
 [![GitHub Actions](https://img.shields.io/badge/CI-passing-brightgreen)](/actions)
