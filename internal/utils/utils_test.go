@@ -293,6 +293,16 @@ func TestNormalizeLinkKey(t *testing.T) {
 			input: "https://example.com?a=1&b=2",
 			want:  "https://example.com:443?" + makeSortedQuery("a=1", "b=2"),
 		},
+		{
+			name:  "query case and trim",
+			input: "https://example.com:443?A=1&b= 2 &c=",
+			want:  "https://example.com:443?" + makeSortedQuery("A=1", "b=2"),
+		},
+		{
+			name:  "query order deterministic",
+			input: "https://example.com:443?z=9&a=1&b=2",
+			want:  "https://example.com:443?" + makeSortedQuery("a=1", "b=2", "z=9"),
+		},
 	}
 
 	for _, tt := range tests {

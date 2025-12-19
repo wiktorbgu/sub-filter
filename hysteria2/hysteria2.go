@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"sub-filter/internal/utils"
 	"sub-filter/internal/validator"
 )
 
@@ -63,12 +64,8 @@ func (h *Hysteria2Link) Process(s string) (string, string) {
 	}
 
 	q := u.Query()
-	params := make(map[string]string, len(q))
-	for k, vs := range q {
-		if len(vs) > 0 {
-			params[k] = vs[0]
-		}
-	}
+	params := utils.ParamsFromValues(q)
+	params = utils.NormalizeParams(params)
 
 	if result := h.ruleValidator.Validate(params); !result.Valid {
 		return "", "Hysteria2: " + result.Reason
@@ -92,13 +89,11 @@ func (h *Hysteria2Link) Process(s string) (string, string) {
 }
 
 func (h *Hysteria2Link) parseHostPort(u *url.URL) (string, int, bool) {
-	host := u.Hostname()
-	portStr := u.Port()
-	if portStr == "" {
+	host, port, err := utils.ParseHostPort(u)
+	if err != nil {
 		return "", 0, false
 	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil || port <= 0 || port > 65535 || !h.isValidHost(host) {
+	if !h.isValidHost(host) {
 		return "", 0, false
 	}
 	return host, port, true

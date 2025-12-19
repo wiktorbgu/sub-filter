@@ -5,7 +5,6 @@ package vmess
 import (
 	"encoding/base64"
 	"encoding/json"
-	"math"
 	"strconv"
 	"strings"
 
@@ -66,26 +65,29 @@ func (v *VMessLink) Process(s string) (string, string) {
 	if err := json.Unmarshal(decoded, &vm); err != nil {
 		return "", "invalid VMess JSON format"
 	}
+	// Извлекаем поля и валидируем минимальные требования
 	ps, _ := vm["ps"].(string)
 	add, _ := vm["add"].(string)
-	var port float64
-	switch vPort := vm["port"].(type) {
+	id, _ := vm["id"].(string)
+	// Порт может быть float64 или строкой
+	var portF float64
+	switch p := vm["port"].(type) {
 	case float64:
-		port = vPort
+		portF = p
 	case string:
-		if p, err := strconv.ParseFloat(vPort, 64); err == nil {
-			port = p
+		if pf, err := strconv.ParseFloat(p, 64); err == nil {
+			portF = pf
 		} else {
 			return "", "invalid port in VMess config"
 		}
 	default:
 		return "", "missing or invalid port in VMess config"
 	}
-	id, _ := vm["id"].(string)
 	if add == "" || id == "" {
 		return "", "missing server address or UUID"
 	}
-	if int(port) <= 0 || int(port) > 65535 {
+	port := int(portF)
+	if port <= 0 || port > 65535 {
 		return "", "invalid port number"
 	}
 	if !v.isValidHost(add) {
@@ -97,20 +99,9 @@ func (v *VMessLink) Process(s string) (string, string) {
 		}
 	}
 
-	// Преобразуем всё в map[string]string, включая пустые строки
-	params := make(map[string]string)
-	for k, vi := range vm {
-		if s, ok := vi.(string); ok {
-			params[k] = s // ← даже если s == ""
-		} else if f, ok := vi.(float64); ok {
-			// port and similar numeric fields should be integer when possible
-			if math.Trunc(f) == f {
-				params[k] = strconv.Itoa(int(f))
-			} else {
-				params[k] = strconv.FormatFloat(f, 'f', -1, 64)
-			}
-		}
-	}
+	// Собираем параметры строкового представления для валидатора
+	params := utils.ParamsFromInterface(vm)
+	params = utils.NormalizeParams(params)
 
 	// Делегируем валидацию политике
 	if result := v.ruleValidator.Validate(params); !result.Valid {

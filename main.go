@@ -343,19 +343,9 @@ func parseCountryCodes(cParam string, countryMap map[string]utils.CountryInfo, m
 }
 
 func handleMerge(w http.ResponseWriter, r *http.Request, cfg *AppConfig, proxyProcessors []ProxyLink) {
-	clientIP, _, _ := net.SplitHostPort(r.RemoteAddr)
-	if clientIP == "" {
-		clientIP = r.RemoteAddr
-	}
-	if !isLocalIP(clientIP) {
-		limiter := getLimiter(clientIP)
-		if !limiter.Allow() {
-			http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
-			return
-		}
-	}
-	if !isValidUserAgent(r.Header.Get("User-Agent"), cfg.AllowedUA) {
-		http.Error(w, "Forbidden: invalid User-Agent", http.StatusForbidden)
+	// Общая валидация клиента: rate-limit, UA
+	if status, msg := validateClientRequest(r, cfg); status != 0 {
+		http.Error(w, msg, status)
 		return
 	}
 
@@ -363,24 +353,11 @@ func handleMerge(w http.ResponseWriter, r *http.Request, cfg *AppConfig, proxyPr
 	if len(idList) == 0 {
 		idList = r.URL.Query()["id"]
 	}
-	if len(idList) == 0 {
-		http.Error(w, "Missing 'ids' parameter", http.StatusBadRequest)
+		if status, msg := validateIDs(idList, cfg); status != 0 {
+		http.Error(w, msg, status)
 		return
 	}
-	if cfg.MaxMergeIDs > 0 && len(idList) > cfg.MaxMergeIDs {
-		http.Error(w, "Too many IDs requested", http.StatusBadRequest)
-		return
-	}
-	for _, id := range idList {
-		if id == "" || len(id) > maxIDLength || !validIDRe.MatchString(id) {
-			http.Error(w, fmt.Sprintf("Invalid id: %s", id), http.StatusBadRequest)
-			return
-		}
-		if _, exists := cfg.Sources[id]; !exists {
-			http.Error(w, fmt.Sprintf("Unknown id: %s", id), http.StatusBadRequest)
-			return
-		}
-	}
+	// validateIDs уже проверил лимиты, формат и существование id
 
 	sortedIDs := make([]string, len(idList))
 	copy(sortedIDs, idList)
@@ -869,6 +846,45 @@ func processSourceToBuckets(id string, source *SafeSource, cfg *AppConfig, proxy
 		_ = os.Rename(tmpFile, rejectedCache)
 	}
 	return nil
+}
+
+// validateClientRequest выполняет общие проверки запроса: rate-limit и User-Agent.
+// Возвращает HTTP-статус != 0 и текст ошибки для прямого ответа клиенту.
+func validateClientRequest(r *http.Request, cfg *AppConfig) (int, string) {
+	clientIP, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if clientIP == "" {
+		clientIP = r.RemoteAddr
+	}
+	if !isLocalIP(clientIP) {
+		limiter := getLimiter(clientIP)
+		if !limiter.Allow() {
+			return http.StatusTooManyRequests, "Too Many Requests"
+		}
+	}
+	if !isValidUserAgent(r.Header.Get("User-Agent"), cfg.AllowedUA) {
+		return http.StatusForbidden, "Forbidden: invalid User-Agent"
+	}
+	return 0, ""
+}
+
+// validateIDs проверяет список id: длину, формат и существование в cfg.Sources.
+// Возвращает HTTP-статус != 0 и текст ошибки для прямого ответа клиенту.
+func validateIDs(idList []string, cfg *AppConfig) (int, string) {
+	if len(idList) == 0 {
+		return http.StatusBadRequest, "Missing 'ids' parameter"
+	}
+	if cfg.MaxMergeIDs > 0 && len(idList) > cfg.MaxMergeIDs {
+		return http.StatusBadRequest, "Too many IDs requested"
+	}
+	for _, id := range idList {
+		if id == "" || len(id) > maxIDLength || !validIDRe.MatchString(id) {
+			return http.StatusBadRequest, fmt.Sprintf("Invalid id: %s", id)
+		}
+		if _, exists := cfg.Sources[id]; !exists {
+			return http.StatusBadRequest, fmt.Sprintf("Unknown id: %s", id)
+		}
+	}
+	return 0, ""
 }
 
 // остальные функции (loadSourcesFromFile, loadConfigFromFile, loadCountriesFromFile, loadConfigFromArgsOrFile, printRulesInfo, loadRulesOrDefault, main) — без изменений, кроме:

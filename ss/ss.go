@@ -1,7 +1,6 @@
 package ss
 
 import (
-	"encoding/base64"
 	"net"
 	"net/url"
 	"regexp"
@@ -82,7 +81,7 @@ func (s *SSLink) Process(sLink string) (string, string) {
 		return "", "SS: " + result.Reason
 	}
 
-	newUser := base64.RawURLEncoding.EncodeToString([]byte(cipher + ":" + password))
+	newUser := utils.EncodeRawURBase64([]byte(cipher + ":" + password))
 	var buf strings.Builder
 	buf.WriteString("ss://")
 	buf.WriteString(newUser)
@@ -96,13 +95,11 @@ func (s *SSLink) Process(sLink string) (string, string) {
 }
 
 func (s *SSLink) parseHostPort(u *url.URL) (string, int, bool) {
-	host := u.Hostname()
-	portStr := u.Port()
-	if portStr == "" {
+	host, port, err := utils.ParseHostPort(u)
+	if err != nil {
 		return "", 0, false
 	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil || port <= 0 || port > 65535 || !s.isValidHost(host) {
+	if !s.isValidHost(host) {
 		return "", 0, false
 	}
 	return host, port, true

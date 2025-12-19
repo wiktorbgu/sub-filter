@@ -16,6 +16,98 @@ import (
 	"strings"
 )
 
+// ParamsFromValues конвертирует url.Values в map[string]string, беря первый элемент каждого ключа.
+func ParamsFromValues(vals url.Values) map[string]string {
+	if vals == nil {
+		return map[string]string{}
+	}
+	m := make(map[string]string, len(vals))
+	for k, vs := range vals {
+		if len(vs) > 0 {
+			m[k] = vs[0]
+		}
+	}
+	return m
+}
+
+// ParamsFromInterface конвертирует map[string]interface{} в map[string]string.
+// Используется для структур типа JSON -> строковые параметры.
+func ParamsFromInterface(src map[string]interface{}) map[string]string {
+	if src == nil {
+		return map[string]string{}
+	}
+	dst := make(map[string]string, len(src))
+	for k, v := range src {
+		switch vv := v.(type) {
+		case string:
+			dst[k] = vv
+		case float64:
+			if vv == float64(int64(vv)) {
+				dst[k] = strconv.Itoa(int(vv))
+			} else {
+				dst[k] = strconv.FormatFloat(vv, 'f', -1, 64)
+			}
+		case int:
+			dst[k] = strconv.Itoa(vv)
+		case int64:
+			dst[k] = strconv.FormatInt(vv, 10)
+		case bool:
+			if vv {
+				dst[k] = "true"
+			} else {
+				dst[k] = "false"
+			}
+		default:
+			// fallback to fmt.Sprintf
+			dst[k] = fmt.Sprintf("%v", vv)
+		}
+	}
+	return dst
+}
+
+// EncodeRawURBase64 кодирует данные в base64 URL-safe без padding.
+func EncodeRawURBase64(data []byte) string {
+	return base64.RawURLEncoding.EncodeToString(data)
+}
+
+// NormalizeALPN выбирает первый допустимый alpn-идентификатор из строки.
+// Возвращает пустую строку, если ничего подходящего не найдено.
+func NormalizeALPN(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	// берем до первой запятой
+	if idx := strings.IndexByte(raw, ','); idx != -1 {
+		raw = raw[:idx]
+	}
+	raw = strings.TrimSpace(raw)
+	if strings.HasPrefix(raw, "h3") {
+		return "h3"
+	}
+	if strings.HasPrefix(raw, "h2") {
+		return "h2"
+	}
+	if strings.HasPrefix(raw, "http/1.1") {
+		return "http/1.1"
+	}
+	return raw
+}
+
+// NormalizeParams нормализует map[string]string: ключи в lower-case, значения trimmed.
+// Пустые значения удаляются.
+func NormalizeParams(m map[string]string) map[string]string {
+	if m == nil {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		nk := strings.ToLower(strings.TrimSpace(k))
+		nv := strings.TrimSpace(v)
+		out[nk] = nv
+	}
+	return out
+}
+
 // === Регулярные выражения ===
 var (
 	// hostRegex валидирует доменные имена (включая Punycode xn--)
@@ -45,19 +137,25 @@ func IsPrintableASCII(data []byte) bool {
 // Если успешно и результат — печатаемый ASCII — возвращает декодированные байты.
 // Иначе — возвращает исходные данные.
 func AutoDecodeBase64(data []byte) []byte {
-	trimmed := regexp.MustCompile(`\s+`).ReplaceAll(data, []byte{})
-	missingPadding := len(trimmed) % 4
-	if missingPadding != 0 {
-		trimmed = append(trimmed, bytes.Repeat([]byte{'='}, 4-missingPadding)...)
-	}
-	decoded, err := base64.StdEncoding.DecodeString(string(trimmed))
-	if err != nil {
-		decoded, err = base64.RawStdEncoding.DecodeString(string(trimmed))
-		if err != nil {
-			return data
+	// Удаляем пробельные символы без выделения regex'а каждый вызов
+	trimmed := bytes.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' || r == ' ' {
+			return -1
 		}
+		return r
+	}, data)
+	// Попробуем стандартный base64 с padding; если неудача — raw
+	s := string(trimmed)
+	if m := len(trimmed) % 4; m != 0 {
+		s += strings.Repeat("=", 4-m)
 	}
-	return decoded
+	if d, err := base64.StdEncoding.DecodeString(s); err == nil {
+		return d
+	}
+	if d, err := base64.RawStdEncoding.DecodeString(string(trimmed)); err == nil {
+		return d
+	}
+	return data
 }
 
 // DecodeUserInfo безопасно декодирует base64-закодированный userinfo,
@@ -131,7 +229,7 @@ func ParseHostPort(u *url.URL) (string, int, error) {
 
 // IsPathSafe проверяет, что путь не выходит за пределы baseDir.
 func IsPathSafe(p, baseDir string) bool {
-	// Resolve symlinks for both baseDir and path to avoid escaping via symlink tricks
+	// Разрешаем симлинки и сравниваем реальные пути
 	resolvedBase, err := filepath.EvalSymlinks(baseDir)
 	if err != nil {
 		resolvedBase = baseDir
@@ -140,12 +238,11 @@ func IsPathSafe(p, baseDir string) bool {
 	if err != nil {
 		resolvedPath = p
 	}
-	cleanPath := filepath.Clean(resolvedPath)
-	rel, err := filepath.Rel(resolvedBase, cleanPath)
+	rel, err := filepath.Rel(resolvedBase, filepath.Clean(resolvedPath))
 	if err != nil {
 		return false
 	}
-	return !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".."
+	return !(strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == "..")
 }
 
 // NormalizeLinkKey извлекает ключевые компоненты из URL-адреса прокси-ссылки для дедупликации.
@@ -189,57 +286,79 @@ func NormalizeLinkKey(line string) (string, error) {
 		path = ""
 	}
 
-	// Извлекаем параметры
-	params := u.Query()
-	keys := make([]string, 0, len(params))
-	for k := range params {
-		keys = append(keys, k)
+	// Извлекаем параметры и нормализуем: ключи -> lower-case, значения -> trimmed,
+	// пустые значения удаляем (они не должны влиять на ключ дедупликации).
+	rawParams := u.Query()
+	keys := make([]string, 0, len(rawParams))
+	norm := make(map[string]string, len(rawParams))
+	origKey := make(map[string]string, len(rawParams))
+	for k, vs := range rawParams {
+		if len(vs) == 0 {
+			continue
+		}
+		v := strings.TrimSpace(vs[0])
+		if v == "" {
+			continue
+		}
+		nk := strings.ToLower(strings.TrimSpace(k))
+		// preserve original key casing for the first occurrence
+		if _, exists := origKey[nk]; !exists {
+			origKey[nk] = k
+		}
+		norm[nk] = v
+		keys = append(keys, nk)
 	}
-	sort.Strings(keys) // ← сортируем ключи
-
-	// Собираем отсортированные "key=value"
-	var queryParts []string
-	for _, k := range keys {
-		queryParts = append(queryParts, k+"="+params.Get(k))
-	}
-	queryStr := strings.Join(queryParts, "&")
-	if queryStr == "" {
+	sort.Strings(keys)
+	// Если нет параметров — возвращаем без '?'
+	if len(keys) == 0 {
+		if path == "" {
+			return fmt.Sprintf("%s://%s", scheme, hostWithPort), nil
+		}
 		return fmt.Sprintf("%s://%s%s", scheme, hostWithPort, path), nil
 	}
+	qp := make([]string, 0, len(keys))
+	for _, k := range keys {
+		outKey := origKey[k]
+		qp = append(qp, outKey+"="+norm[k])
+	}
+	queryStr := strings.Join(qp, "&")
 	return fmt.Sprintf("%s://%s%s?%s", scheme, hostWithPort, path, queryStr), nil
 }
 
 // CompareAndSelectBetter выбирает "лучшую" из двух дублирующих ссылок.
 // Предпочитает ту, у которой больше query-параметров.
 func CompareAndSelectBetter(currentLine, existingLine string) string {
-	uCurrent, err1 := url.Parse(currentLine)
-	uExisting, err2 := url.Parse(existingLine)
-
+	u1, err1 := url.Parse(currentLine)
+	u2, err2 := url.Parse(existingLine)
 	if err1 != nil {
 		return existingLine
 	}
 	if err2 != nil {
 		return currentLine
 	}
-
-	score := func(u *url.URL) int {
+	q1, q2 := u1.Query(), u2.Query()
+	score := func(q map[string][]string) int {
 		s := 0
-		q := u.Query()
-		if sec := strings.ToLower(q.Get("security")); sec != "" && sec != "none" {
+		if sec := strings.ToLower(first(q["security"])); sec != "" && sec != "none" {
 			s += 50
 		}
-		if q.Get("tls") != "" {
+		if first(q["tls"]) != "" {
 			s += 10
 		}
-		s += len(q)
-		return s
+		return s + len(q)
 	}
-
-	if score(uCurrent) > score(uExisting) {
+	if score(q1) > score(q2) {
 		return currentLine
 	}
-	if score(uExisting) > score(uCurrent) {
+	if score(q2) > score(q1) {
 		return existingLine
 	}
-	return existingLine // стабильность: оставить старую
+	return existingLine
+}
+
+func first(v []string) string {
+	if len(v) == 0 {
+		return ""
+	}
+	return v[0]
 }

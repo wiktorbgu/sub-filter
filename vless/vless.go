@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 
+	"sub-filter/internal/utils"
+
 	"sub-filter/internal/validator"
 )
 
@@ -81,12 +83,8 @@ func (v *VLESSLink) Process(s string) (string, string) {
 	// Теперь это регулируется политикой (если нужно)
 
 	// Собираем параметры для валидатора
-	params := make(map[string]string, len(q))
-	for k, vs := range q {
-		if len(vs) > 0 {
-			params[k] = vs[0]
-		}
-	}
+	params := utils.ParamsFromValues(q)
+	params = utils.NormalizeParams(params)
 
 	// --- НОВАЯ ЛОГИКА: Установка значения по умолчанию для 'type' ---
 	// Если параметр 'type' отсутствует в URL, устанавливаем его в "raw" (синоним "tcp").
@@ -111,23 +109,9 @@ func (v *VLESSLink) Process(s string) (string, string) {
 
 	// Обработка ALPN (остаётся как часть форматирования, а не валидации)
 	if alpnValues := q["alpn"]; len(alpnValues) > 0 {
-		rawAlpn := alpnValues[0]
-		var firstValid string
-		if strings.HasPrefix(rawAlpn, "h3") {
-			firstValid = "h3"
-		} else if strings.HasPrefix(rawAlpn, "h2") {
-			firstValid = "h2"
-		} else if strings.HasPrefix(rawAlpn, "http/1.1") {
-			firstValid = "http/1.1"
-		} else {
-			if idx := strings.IndexByte(rawAlpn, ','); idx != -1 {
-				firstValid = rawAlpn[:idx]
-			} else {
-				firstValid = rawAlpn
-			}
-		}
-		if firstValid != "" {
-			q["alpn"] = []string{firstValid}
+		norm := utils.NormalizeALPN(alpnValues[0])
+		if norm != "" {
+			q["alpn"] = []string{norm}
 		} else {
 			delete(q, "alpn")
 		}
@@ -154,14 +138,9 @@ func (v *VLESSLink) Process(s string) (string, string) {
 
 // validateVLESSHostPort извлекает и проверяет хост и порт.
 func (v *VLESSLink) validateVLESSHostPort(u *url.URL) (string, int, string) {
-	host := u.Hostname()
-	portStr := u.Port()
-	if portStr == "" {
-		return "", 0, "missing port"
-	}
-	port, err := strconv.Atoi(portStr)
+	host, port, err := utils.ParseHostPort(u)
 	if err != nil {
-		return "", 0, "invalid port"
+		return "", 0, err.Error()
 	}
 	if !v.isValidPort(port) {
 		return "", 0, "port out of range"

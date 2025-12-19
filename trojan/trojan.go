@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"sub-filter/internal/utils"
 	"sub-filter/internal/validator"
 )
 
@@ -59,12 +60,8 @@ func (t *TrojanLink) Process(s string) (string, string) {
 	}
 
 	q := u.Query()
-	params := make(map[string]string, len(q))
-	for k, vs := range q {
-		if len(vs) > 0 {
-			params[k] = vs[0]
-		}
-	}
+	params := utils.ParamsFromValues(q)
+	params = utils.NormalizeParams(params)
 
 	if result := t.ruleValidator.Validate(params); !result.Valid {
 		return "", "Trojan: " + result.Reason
@@ -87,13 +84,11 @@ func (t *TrojanLink) Process(s string) (string, string) {
 }
 
 func (t *TrojanLink) parseHostPort(u *url.URL) (string, int, bool) {
-	host := u.Hostname()
-	portStr := u.Port()
-	if portStr == "" {
+	host, port, err := utils.ParseHostPort(u)
+	if err != nil {
 		return "", 0, false
 	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil || port <= 0 || port > 65535 || !t.isValidHost(host) {
+	if !t.isValidHost(host) {
 		return "", 0, false
 	}
 	return host, port, true

@@ -12,6 +12,11 @@ type GenericValidator struct {
 }
 
 func (gv *GenericValidator) Validate(params map[string]string) ValidationResult {
+	// Кэшируем lower-case версию параметров, чтобы избежать многократных вызовов ToLower
+	lowerParams := make(map[string]string, len(params))
+	for k, v := range params {
+		lowerParams[k] = strings.ToLower(v)
+	}
 	// 1. Обязательные параметры (без изменений)
 	for _, param := range gv.Rule.RequiredParams {
 		if _, exists := params[param]; !exists {
@@ -24,13 +29,12 @@ func (gv *GenericValidator) Validate(params map[string]string) ValidationResult 
 
 	// 2. Запрещённые значения — регистронезависимые
 	for param, forbidden := range gv.Rule.ForbiddenValues {
-		if value, exists := params[param]; exists {
-			lowerValue := strings.ToLower(value)
+		if value, exists := lowerParams[param]; exists {
 			for _, f := range forbidden {
-				if lowerValue == strings.ToLower(f) {
+				if value == strings.ToLower(f) {
 					return ValidationResult{
 						Valid:  false,
-						Reason: fmt.Sprintf("forbidden value for %s: %q", param, value),
+						Reason: fmt.Sprintf("forbidden value for %s: %q", param, params[param]),
 					}
 				}
 			}
@@ -39,11 +43,10 @@ func (gv *GenericValidator) Validate(params map[string]string) ValidationResult 
 
 	// 3. Разрешённые значения — регистронезависимые
 	for param, allowed := range gv.Rule.AllowedValues {
-		if value, exists := params[param]; exists {
-			lowerValue := strings.ToLower(value)
+		if value, exists := lowerParams[param]; exists {
 			found := false
 			for _, a := range allowed {
-				if lowerValue == strings.ToLower(a) {
+				if value == strings.ToLower(a) {
 					found = true
 					break
 				}
@@ -51,7 +54,7 @@ func (gv *GenericValidator) Validate(params map[string]string) ValidationResult 
 			if !found {
 				return ValidationResult{
 					Valid:  false,
-					Reason: fmt.Sprintf("invalid value for %s: %q (allowed: %v)", param, value, allowed),
+					Reason: fmt.Sprintf("invalid value for %s: %q (allowed: %v)", param, params[param], allowed),
 				}
 			}
 		}
