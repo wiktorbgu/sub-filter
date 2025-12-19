@@ -56,6 +56,20 @@ jobs:
         with:
           go-version-file: ./go.mod
 
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@v2
+
       - name: Set up ko
         uses: ko-build/setup-ko@v0.6
 
@@ -69,11 +83,11 @@ jobs:
             TAG_ARGS="$TAG_ARGS --tags=$tag"
           done
 
-          # Build for multiple platforms
+          # Build for multiple platforms (omit legacy 386 to reduce build size/time)
           ko build \
             -v \
             -B \
-            --platform=linux/amd64,linux/386,linux/arm64,linux/arm/v7 \
+            --platform=linux/amd64,linux/arm64,linux/arm/v7 \
             --sbom=spdx-json \
             $TAG_ARGS \
             --image-refs=.digest \
@@ -87,6 +101,26 @@ jobs:
 
       - name: Show built image references
         run: cat .digest
+
+      - name: Install cosign
+        run: |
+          COSIGN_VERSION="2.5.0"
+          curl -sSL "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-${COSIGN_VERSION}-linux-amd64" -o /usr/local/bin/cosign
+          chmod +x /usr/local/bin/cosign
+
+      - name: Keyless sign built image (cosign)
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Use keyless signing via OIDC (requires id-token permission)
+          IMAGE=${{ steps.build.outputs.image }}
+          DIGEST=${{ steps.build.outputs.digest }}
+          if [ -n "${IMAGE}" ] && [ -n "${DIGEST}" ]; then
+            cosign sign --keyless ${IMAGE}@${DIGEST} || echo "cosign sign failed"
+          else
+            echo "No image/digest to sign"
+          fi
 
   provenance:
     name: Generate SLSA Provenance
