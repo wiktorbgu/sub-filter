@@ -117,6 +117,19 @@ jobs:
       - name: Show built image references
         run: cat .digest
 
+      - name: Inspect built image manifest
+        run: |
+          IMAGE=${{ steps.build.outputs.image }}
+          DIGEST=${{ steps.build.outputs.digest }}
+          if [ -n "${IMAGE}" ] && [ -n "${DIGEST}" ]; then
+            echo "Inspecting ${IMAGE}@${DIGEST}"
+            # Print raw manifest list (platforms, digests). If imagetools is unavailable,
+            # this will fail gracefully without breaking the workflow.
+            docker buildx imagetools inspect "${IMAGE}@${DIGEST}" --raw || true
+          else
+            echo "No image/digest to inspect"
+          fi
+
       - name: Install cosign (sigstore action)
         uses: sigstore/cosign-installer@v4.0.0
         with:
