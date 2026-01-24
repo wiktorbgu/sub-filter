@@ -228,20 +228,29 @@ func ParseHostPort(u *url.URL) (string, int, error) {
 
 // IsPathSafe проверяет, что путь не выходит за пределы baseDir.
 func IsPathSafe(p, baseDir string) bool {
-	// Разрешаем симлинки и сравниваем реальные пути
 	resolvedBase, err := filepath.EvalSymlinks(baseDir)
 	if err != nil {
-		resolvedBase = baseDir
+		return false // база должна существовать
 	}
-	resolvedPath, err := filepath.EvalSymlinks(p)
+	resolvedBase = filepath.Clean(resolvedBase)
+
+	// Разрешаем только родительскую директорию файла
+	dir := filepath.Dir(p)
+	resolvedDir, err := filepath.EvalSymlinks(dir)
 	if err != nil {
-		resolvedPath = p
+		// Если директория не существует, используем Abs + Clean
+		resolvedDir, err = filepath.Abs(dir)
+		if err != nil {
+			return false
+		}
 	}
-	rel, err := filepath.Rel(resolvedBase, filepath.Clean(resolvedPath))
-	if err != nil {
-		return false
-	}
-	return !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".."
+	resolvedDir = filepath.Clean(resolvedDir)
+
+	// Формируем полный путь к файлу уже в разрешённой директории
+	candidate := filepath.Join(resolvedDir, filepath.Base(p))
+
+	// Проверяем префикс
+	return strings.HasPrefix(candidate, resolvedBase+string(filepath.Separator)) || candidate == resolvedBase
 }
 
 // NormalizeLinkKey извлекает ключевые компоненты из URL-адреса прокси-ссылки для дедупликации.

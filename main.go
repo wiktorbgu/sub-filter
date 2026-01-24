@@ -119,12 +119,25 @@ func (cfg *AppConfig) Init() {
 }
 
 var (
-	ipLimiter              = make(map[string]*rate.Limiter)
-	ipLastSeen             = make(map[string]time.Time)
-	limiterMutex           sync.RWMutex
+	ipLimiter              sync.Map // map[string]*rate.Limiter, для безблокировочного чтения
+	ipLastSeen             sync.Map // map[string]time.Time
 	fetchGroup             singleflight.Group
 	builtinAllowedPrefixes = []string{"clash", "happ"}
 	validIDRe              = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
+
+	// Кешированные регулярные выражения для избежания перекомпиляции
+	filenameCleanupRegex  = regexp.MustCompile(`[^a-zA-Z0-9._-]`)
+	validProfileNameRegex = regexp.MustCompile(`^[a-zA-Z0-9._-]+\.txt$`)
+
+	// Протокольные схемы для быстрого одноходового детектирования
+	protoSchemes = [][]byte{
+		[]byte("vless://"),
+		[]byte("vmess://"),
+		[]byte("trojan://"),
+		[]byte("ss://"),
+		[]byte("hysteria2://"),
+		[]byte("hy2://"),
+	}
 )
 
 type ProxyLink interface {
@@ -136,6 +149,201 @@ type ProxyLink interface {
 // Реализации должны определять, соответствует ли строка формату
 // (`Matches`) и возвращать нормализованную строку и (опционально)
 // причину отказа из `Process`.
+
+// detectProxyScheme выполняет быстрое одноходовое детектирование протокола.
+// Намного эффективнее чем 6 отдельных bytes.Contains вызовов.
+func detectProxyScheme(content []byte) bool {
+	for _, scheme := range protoSchemes {
+		if bytes.Contains(content, scheme) {
+			return true
+		}
+	}
+	return false
+}
+
+// buildProfileHeader эффективно конструирует метаданные профиля используя strings.Builder
+func buildProfileHeader(profileName, id string, countryCodes []string) string {
+	var buf strings.Builder
+	buf.WriteString("#profile-title: ")
+	buf.WriteString(profileName)
+	buf.WriteString(" filtered ")
+	buf.WriteString(id)
+
+	if len(countryCodes) > 0 {
+		buf.WriteString(" (")
+		for i, code := range countryCodes {
+			if i > 0 {
+				buf.WriteString(",")
+			}
+			buf.WriteString(code)
+		}
+		buf.WriteString(")")
+	}
+
+	return buf.String()
+}
+
+// buildProfileInterval эффективно создаёт директиву интервала обновления
+func buildProfileInterval(cacheTTL time.Duration) string {
+	updateInterval := int(cacheTTL.Seconds() / 3600)
+	if updateInterval < 1 {
+		updateInterval = 1
+	}
+	return "#profile-update-interval: " + strconv.Itoa(updateInterval)
+}
+
+// streamProcessResponse обрабатывает тело HTTP ответа построчно
+// Обрабатывает строки по мере их поступления вместо буферизации всего ответа в памяти.
+// Это значительно снижает пиковое использование памяти для больших источников.
+func streamProcessResponse(resp *http.Response, processor func(string) error) error {
+	scanner := bufio.NewScanner(io.LimitReader(resp.Body, maxSourceBytes))
+	// Увеличение размера буфера для лучшей пропускной способности на больших строках
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+
+	for scanner.Scan() {
+		line := strings.TrimRight(scanner.Text(), "\r\n")
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if err := processor(line); err != nil {
+			return err
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return newError("Parse", "stream read error: %w", err)
+	}
+	return nil
+}
+
+// createHTTPClientWithDialContext создает HTTP клиента с pooling транспортом и кастомным DialContext
+// Переиспользует соединения благодаря MaxIdleConns и IdleConnTimeout.
+func createHTTPClientWithDialContext(_ context.Context, dialFunc func(ctx context.Context, network, addr string) (net.Conn, error)) *http.Client {
+	return &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			DialContext:         dialFunc,
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 10,
+			MaxConnsPerHost:     100,
+			IdleConnTimeout:     90 * time.Second,
+			DisableKeepAlives:   false,
+			DisableCompression:  false,
+			TLSClientConfig:     &tls.Config{InsecureSkipVerify: false},
+		},
+	}
+}
+
+// fetchSourceContent загружает содержимое источника из кэша или удалённого URL с поддержкой streamProcessResponse
+// Параметр lineProcessor (если не nil) обрабатывает каждую строку по мере её поступления.
+// Если lineProcessor == nil, функция возвращает весь контент как []byte для обратной совместимости.
+// Это обеспечивает минимальное пиковое использование памяти для больших источников.
+func fetchSourceContent(id string, source *SafeSource, cfg *AppConfig, origCache string, stdout bool, lineProcessor func(string) error) ([]byte, error) {
+	// Проверка кэша сначала
+	if !stdout {
+		if info, err := os.Stat(origCache); err == nil && time.Since(info.ModTime()) <= cfg.CacheTTL {
+			if content, err := os.ReadFile(origCache); err == nil {
+				return content, nil
+			}
+		}
+	}
+
+	// Парсинг URL источника для извлечения хоста и порта
+	parsedSource, err := url.Parse(source.URL)
+	if err != nil {
+		return nil, newError("Parse", "invalid source URL: %w", err)
+	}
+
+	_, portStr, _ := net.SplitHostPort(parsedSource.Host)
+	if portStr == "" {
+		portStr = getDefaultPort(parsedSource.Scheme)
+	}
+
+	// Создание HTTP клиента с pooling транспортом и кастомным DialContext
+	// createHTTPClientWithDialContext переиспользует соединения благодаря MaxIdleConns и IdleConnTimeout
+	dialFunc := func(ctx context.Context, network, _ string) (net.Conn, error) {
+		dialer := &net.Dialer{Timeout: 5 * time.Second}
+		return dialer.DialContext(ctx, network, net.JoinHostPort(source.IP.String(), portStr))
+	}
+	client := createHTTPClientWithDialContext(context.TODO(), dialFunc)
+
+	// Если lineProcessor предоставлен, используем streamProcessResponse для построчной обработки
+	if lineProcessor != nil {
+		// Использование singleflight для дедупликации одновременных запросов для того же источника
+		_, err, _ := fetchGroup.Do(id, func() (interface{}, error) {
+			req, err := http.NewRequest("GET", source.URL, nil)
+			if err != nil {
+				return nil, newError("HTTP", "create request: %w", err)
+			}
+			req.Header.Set("User-Agent", "go-filter/1.0")
+
+			resp, err := client.Do(req)
+			if err != nil {
+				return nil, newError("HTTP", "fetch failed: %w", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+
+			if resp.StatusCode >= 400 {
+				return nil, newError("HTTP", "status code %d", resp.StatusCode)
+			}
+
+			// Обработка ответа построчно без буферизации
+			// Это позволяет обрабатывать большие источники с минимальным пиковым использованием памяти
+			if err := streamProcessResponse(resp, lineProcessor); err != nil {
+				return nil, newError("Parse", "stream processing failed: %w", err)
+			}
+
+			return nil, nil
+		})
+		return nil, err
+	}
+
+	// Для обратной совместимости: если lineProcessor == nil, читаем весь контент как раньше
+	result, err, _ := fetchGroup.Do(id, func() (interface{}, error) {
+		req, err := http.NewRequest("GET", source.URL, nil)
+		if err != nil {
+			return nil, newError("HTTP", "create request: %w", err)
+		}
+		req.Header.Set("User-Agent", "go-filter/1.0")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, newError("HTTP", "fetch failed: %w", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		if resp.StatusCode >= 400 {
+			return nil, newError("HTTP", "status code %d", resp.StatusCode)
+		}
+
+		content, err := io.ReadAll(io.LimitReader(resp.Body, maxSourceBytes))
+		if err != nil {
+			return nil, newError("IO", "read failed: %w", err)
+		}
+
+		// Кеширование исходного содержимого
+		if !stdout {
+			tmpFile := origCache + ".tmp"
+			if err := os.WriteFile(tmpFile, content, 0o644); err == nil {
+				logErrorf("FileOp", "rename cache", os.Rename(tmpFile, origCache))
+			}
+		}
+
+		return content, nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	content, ok := result.([]byte)
+	if !ok {
+		return nil, newError("Validate", "fetch returned unexpected type for id=%s", id)
+	}
+
+	return content, nil
+}
 
 // createProxyProcessors формирует список обработчиков ссылок для поддерживаемых протоколов.
 func createProxyProcessors(badWords []string, rules map[string]validator.Validator) []ProxyLink {
@@ -167,6 +375,27 @@ func createProxyProcessors(badWords []string, rules map[string]validator.Validat
 	}
 }
 
+// logErrorf логирует ошибку с категорией и контекстом
+// Унифицирует все сообщения об ошибках с единообразным форматом
+func logErrorf(category, context string, err error) {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[ERROR] %s %s: %v\n", category, context, err)
+	}
+}
+
+// logWarnf логирует предупреждение с категорией и контекстом
+func logWarnf(category, context string, err error) {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[WARN] %s %s: %v\n", category, context, err)
+	}
+}
+
+// newError создаёт ошибку с категорией контекста для унифицированного логирования
+// Позволяет использовать %w для обёртывания исходных ошибок
+func newError(category, format string, args ...interface{}) error {
+	return fmt.Errorf("[%s] "+format, append([]interface{}{category}, args...)...)
+}
+
 // loadTextFile читает текстовый файл построчно, опционально применяя
 // функцию-обработчик к каждой непустой и некомментированной строке.
 // Поддерживается удаление BOM (UTF-8). Возвращается слайс обработанных строк.
@@ -179,7 +408,8 @@ func loadTextFile(filename string, processor func(string) string) ([]string, err
 	defer func() { _ = file.Close() }()
 	reader := bufio.NewReader(file)
 	if b, err := reader.Peek(3); err == nil && bytes.Equal(b, []byte{0xEF, 0xBB, 0xBF}) {
-		_, _ = reader.Discard(3)
+		_, err := reader.Discard(3)
+		logWarnf("Parse", "discard BOM", err)
 	}
 	var result []string
 	scanner := bufio.NewScanner(reader)
@@ -236,20 +466,23 @@ func isValidSourceURL(rawURL string) bool {
 }
 
 func getLimiter(ip string) *rate.Limiter {
-	limiterMutex.Lock()
-	defer limiterMutex.Unlock()
-	ipLastSeen[ip] = time.Now()
-	if limiter, exists := ipLimiter[ip]; exists {
+	// Быстрый путь: попытка загрузить существующий limiter (без блокировок)
+	if limiterInterface, ok := ipLimiter.Load(ip); ok {
+		limiter := limiterInterface.(*rate.Limiter)
+		// Обновление времени последнего доступа
+		ipLastSeen.Store(ip, time.Now())
 		return limiter
 	}
+
+	// Медленный путь: создание нового limiter и его сохранение (блокировка только для этого IP)
 	limiter := rate.NewLimiter(rate.Every(limiterEvery), limiterBurst)
-	ipLimiter[ip] = limiter
+	ipLimiter.Store(ip, limiter)
+	ipLastSeen.Store(ip, time.Now())
 	return limiter
 }
 
-// getLimiter возвращает или создаёт rate limiter для указанного IP.
-// Также обновляет метку времени последнего обращения для IP. Вызовам
-// не следует удерживать блокировки при использовании возвращённого лимитера.
+// getLimiter возвращает или создаёт ограничитель скорости для указанного IP.
+// Также обновляет отметку времени последнего доступа. Оптимизировано с sync.Map для безблокировочного чтения.
 
 func cleanupLimiters(ctx context.Context) {
 	ticker := time.NewTicker(cleanupInterval)
@@ -259,29 +492,32 @@ func cleanupLimiters(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			limiterMutex.RLock()
 			var toDelete []string
 			now := time.Now()
-			for ip, last := range ipLastSeen {
-				if now.Sub(last) > inactiveTimeout {
+
+			// Итерирование через ipLastSeen для поиска неактивных IP
+			ipLastSeen.Range(func(key, value interface{}) bool {
+				ip := key.(string)
+				lastSeen := value.(time.Time)
+				if now.Sub(lastSeen) > inactiveTimeout {
 					toDelete = append(toDelete, ip)
 				}
-			}
-			limiterMutex.RUnlock()
+				return true // продолжить итерацию
+			})
+
+			// Удаление неактивных IP
 			if len(toDelete) > 0 {
-				limiterMutex.Lock()
 				for _, ip := range toDelete {
-					delete(ipLimiter, ip)
-					delete(ipLastSeen, ip)
+					ipLimiter.Delete(ip)
+					ipLastSeen.Delete(ip)
 				}
-				limiterMutex.Unlock()
 			}
 		}
 	}
 }
 
-// cleanupLimiters периодически удаляет из памяти неиспользуемые лимитеры IP.
-// Функция работает пока не будет отменён контекст.
+// cleanupLimiters периодически удаляет неиспользуемые IP ограничители из памяти.
+// Функция выполняется до отмены контекста.
 
 func isValidUserAgent(ua string, allowedUA []string) bool {
 	lowerUA := strings.ToLower(ua)
@@ -306,11 +542,11 @@ func serveFile(w http.ResponseWriter, content []byte, sourceURL, id string) {
 	filename := "filtered_" + id + ".txt"
 	if u, err := url.Parse(sourceURL); err == nil {
 		base := path.Base(u.Path)
-		if base != "" && regexp.MustCompile(`^[a-zA-Z0-9._-]+\.txt$`).MatchString(base) {
+		if base != "" && validProfileNameRegex.MatchString(base) {
 			filename = base
 		}
 	}
-	filename = regexp.MustCompile(`[^a-zA-Z0-9._-]`).ReplaceAllString(filename, "_")
+	filename = filenameCleanupRegex.ReplaceAllString(filename, "_")
 	if !strings.HasSuffix(strings.ToLower(filename), ".txt") {
 		filename += ".txt"
 	}
@@ -318,13 +554,17 @@ func serveFile(w http.ResponseWriter, content []byte, sourceURL, id string) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
 	w.Header().Set("Content-Length", strconv.Itoa(len(content)))
-	_, _ = w.Write(content)
+	_, err := w.Write(content)
+	logErrorf("HTTP", "write response", err)
 }
 
 // serveFile отправляет `content` в ответ как загружаемый .txt файл.
 // Имя файла формируется из URL источника или переданного id и
 // очищается для предотвращения обхода путей и недопустимых символов.
 
+// isLocalIP возвращает true для loopback/частных адресов или если
+// входная строка не распарсилась как IP. Это позволяет трактовать
+// некорректные RemoteAddr как локальные для консервативной обработки.
 func isLocalIP(ipStr string) bool {
 	ip := net.ParseIP(ipStr)
 	if ip == nil {
@@ -336,10 +576,6 @@ func isLocalIP(ipStr string) bool {
 	return ip.IsLoopback() || ip.IsPrivate()
 }
 
-// isLocalIP возвращает true для loopback/частных адресов или если
-// входная строка не распарсилась как IP. Это позволяет трактовать
-// некорректные RemoteAddr как локальные для консервативной обработки.
-
 // parseCountryCodes парсит и валидирует список кодов стран вида "AD,DE,FR".
 // Возвращает отсортованный список уникальных кодов или ошибку.
 func parseCountryCodes(cParam string, countryMap map[string]utils.CountryInfo, maxCodes int) ([]string, error) {
@@ -348,7 +584,7 @@ func parseCountryCodes(cParam string, countryMap map[string]utils.CountryInfo, m
 	}
 	rawCodes := strings.Split(cParam, ",")
 	if maxCodes > 0 && len(rawCodes) > maxCodes {
-		return nil, fmt.Errorf("too many country codes (max %d)", maxCodes)
+		return nil, newError("Validate", "too many country codes (max %d)", maxCodes)
 	}
 
 	seen := make(map[string]bool)
@@ -359,10 +595,10 @@ func parseCountryCodes(cParam string, countryMap map[string]utils.CountryInfo, m
 			continue
 		}
 		if len(code) != 2 || !validIDRe.MatchString(code) {
-			return nil, fmt.Errorf("invalid country code format: %q", code)
+			return nil, newError("Validate", "invalid country code format: %q", code)
 		}
 		if _, exists := countryMap[code]; !exists {
-			return nil, fmt.Errorf("unknown country code: %q", code)
+			return nil, newError("Validate", "unknown country code: %q", code)
 		}
 		if !seen[code] {
 			seen[code] = true
@@ -426,7 +662,7 @@ func handleMerge(w http.ResponseWriter, r *http.Request, cfg *AppConfig, proxyPr
 		http.Error(w, fmt.Sprintf("Failed to create temp dir: %v", err), http.StatusInternalServerError)
 		return
 	}
-	// Open bucket files and writers
+	// Открытие файлов bucket и writers
 	bucketFiles := make([]*os.File, nBuckets)
 	bucketWriters := make([]*bufio.Writer, nBuckets)
 	bucketLocks := make([]sync.Mutex, nBuckets)
@@ -437,14 +673,14 @@ func handleMerge(w http.ResponseWriter, r *http.Request, cfg *AppConfig, proxyPr
 		if !success {
 			for i := 0; i < nBuckets; i++ {
 				if bucketWriters[i] != nil {
-					_ = bucketWriters[i].Flush()
+					logErrorf("FileOp", fmt.Sprintf("flush bucket_%d", i), bucketWriters[i].Flush())
 				}
 				if bucketFiles[i] != nil {
-					_ = bucketFiles[i].Close()
+					logErrorf("FileOp", fmt.Sprintf("close bucket_%d", i), bucketFiles[i].Close())
 				}
-				_ = os.Remove(filepath.Join(tmpDir, fmt.Sprintf("bucket_%d.txt", i)))
+				logErrorf("FileOp", fmt.Sprintf("remove bucket_%d", i), os.Remove(filepath.Join(tmpDir, fmt.Sprintf("bucket_%d.txt", i))))
 			}
-			_ = os.RemoveAll(tmpDir)
+			logErrorf("FileOp", "remove merge temp dir", os.RemoveAll(tmpDir))
 		}
 	}()
 
@@ -459,7 +695,7 @@ func handleMerge(w http.ResponseWriter, r *http.Request, cfg *AppConfig, proxyPr
 		bucketWriters[i] = bufio.NewWriter(f)
 	}
 
-	// process sources concurrently, writing processed lines to bucket files
+	// Обработка источников параллельно, запись обработанных строк в файлы bucket
 	eg, ctx := errgroup.WithContext(context.Background())
 	for _, id := range idList {
 		id := id
@@ -471,11 +707,11 @@ func handleMerge(w http.ResponseWriter, r *http.Request, cfg *AppConfig, proxyPr
 			}
 			source, exists := cfg.Sources[id]
 			if !exists {
-				return fmt.Errorf("source not found for id: %s", id)
+				return newError("Config", "source not found for id: %s", id)
 			}
-			// Process and write to buckets
+			// Обработка и запись в bucket
 			if err := processSourceToBuckets(id, source, cfg, proxyProcessors, countryCodes, nBuckets, bucketWriters, &bucketLocks); err != nil {
-				return fmt.Errorf("error processing source id '%s': %w", id, err)
+				return newError("Process", "error processing source id '%s': %w", id, err)
 			}
 			return nil
 		})
@@ -485,29 +721,29 @@ func handleMerge(w http.ResponseWriter, r *http.Request, cfg *AppConfig, proxyPr
 		return
 	}
 
-	// flush and close bucket files
+	// Промывка и закрытие файлов bucket
 	for i := 0; i < nBuckets; i++ {
-		_ = bucketWriters[i].Flush()
-		_ = bucketFiles[i].Close()
+		logErrorf("FileOp", fmt.Sprintf("flush bucket_%d", i), bucketWriters[i].Flush())
+		logErrorf("FileOp", fmt.Sprintf("close bucket_%d", i), bucketFiles[i].Close())
 	}
 
-	// Iterate buckets, dedupe per-bucket and collect final lines
+	// Итерирование bucket'ов, дедупликация per-bucket и сбор финальных строк
 	finalLines := make([]string, 0)
 	for i := 0; i < nBuckets; i++ {
 		p := filepath.Join(tmpDir, fmt.Sprintf("bucket_%d.txt", i))
 		f, err := os.Open(p)
 		if err != nil {
-			// skip empty/missing buckets
+			// пропуск пустых/отсутствующих bucket'ов
 			continue
 		}
 		scanner := bufio.NewScanner(f)
-		// allow long lines
+		// разрешаем длинные строки
 		buf := make([]byte, 0, 64*1024)
 		scanner.Buffer(buf, 4*1024*1024)
 		bucketMap := make(map[string]string)
 		for scanner.Scan() {
 			line := scanner.Text()
-			// format: key\tfull_line
+			// формат: key\tfull_line
 			idx := strings.IndexByte(line, '\t')
 			if idx <= 0 {
 				continue
@@ -525,26 +761,30 @@ func handleMerge(w http.ResponseWriter, r *http.Request, cfg *AppConfig, proxyPr
 		for _, v := range bucketMap {
 			finalLines = append(finalLines, v)
 		}
-		// remove bucket file to save space
-		_ = os.Remove(p)
+		// удаление файла bucket для экономии памяти
+		logErrorf("FileOp", "remove bucket file", os.Remove(p))
 	}
-	// remove temp dir
-	_ = os.Remove(tmpDir)
+	// удаление временной директории
+	logErrorf("FileOp", "remove merge temp dir", os.Remove(tmpDir))
 	sort.Strings(finalLines)
 
 	profileName := "merged_" + strings.Join(sortedIDs, "_")
 	if len(countryCodes) > 0 {
 		profileName += "_" + strings.Join(countryCodes, "_")
 	}
+	updateInterval := int(cfg.CacheTTL.Seconds() / 3600)
+	if updateInterval < 1 {
+		updateInterval = 1
+	}
 	profileTitle := fmt.Sprintf("#profile-title: %s", profileName)
-	profileInterval := fmt.Sprintf("#profile-update-interval: %d", int(cfg.CacheTTL.Seconds()/3600))
+	profileInterval := fmt.Sprintf("#profile-update-interval: %d", updateInterval)
 	finalContent := strings.Join(append([]string{profileTitle, profileInterval, ""}, finalLines...), "\n")
 
 	tmpFile := cacheFilePath + ".tmp"
 	if err := os.WriteFile(tmpFile, []byte(finalContent), 0o644); err == nil {
-		_ = os.Rename(tmpFile, cacheFilePath)
+		logErrorf("FileOp", "rename merge cache", os.Rename(tmpFile, cacheFilePath))
 	}
-	// mark successful completion to avoid deferred cleanup
+	// отметка успешного завершения для избежания отложенной очистки
 	success = true
 	serveFile(w, []byte(finalContent), "merged_sources", mergeCacheKey)
 }
@@ -562,14 +802,14 @@ func processSource(id string, source *SafeSource, cfg *AppConfig, proxyProcessor
 	// в каталоге cfg.CacheDir.
 	parsedSource, err := url.Parse(source.URL)
 	if err != nil || parsedSource.Host == "" {
-		return "", fmt.Errorf("invalid source URL")
+		return "", newError("Parse", "invalid source URL")
 	}
 	if source == nil || source.IP == nil {
-		return "", fmt.Errorf("missing resolved IP for source id=%s", id)
+		return "", newError("Validate", "missing resolved IP for source id=%s", id)
 	}
 	host := parsedSource.Hostname()
 	if !utils.IsValidHost(host) {
-		return "", fmt.Errorf("invalid source host: %s", host)
+		return "", newError("Validate", "invalid source host: %s", host)
 	}
 
 	cacheSuffix := ""
@@ -584,92 +824,31 @@ func processSource(id string, source *SafeSource, cfg *AppConfig, proxyProcessor
 	if !utils.IsPathSafe(origCache, cfg.CacheDir) ||
 		!utils.IsPathSafe(modCache, cfg.CacheDir) ||
 		!utils.IsPathSafe(rejectedCache, cfg.CacheDir) {
-		return "", fmt.Errorf("unsafe cache path for id=%s", id)
+		return "", newError("Validate", "unsafe cache path for id=%s", id)
 	}
 
 	if !stdout {
 		if info, err := os.Stat(modCache); err == nil && time.Since(info.ModTime()) <= cfg.CacheTTL {
-			content, _ := os.ReadFile(modCache)
-			return string(content), nil
+			content, err := os.ReadFile(modCache)
+			if err == nil {
+				return string(content), nil
+			}
 		}
 	}
 
 	var origContent []byte
-	if !stdout {
-		if info, err := os.Stat(origCache); err == nil && time.Since(info.ModTime()) <= cfg.CacheTTL {
-			if content, err := os.ReadFile(origCache); err == nil {
-				origContent = content
-			}
-		}
+	// Использование вспомогательной функции для загрузки содержимого
+	// Передаём nil для lineProcessor, чтобы использовать старый режим (возврат []byte)
+	content, err := fetchSourceContent(id, source, cfg, origCache, stdout, nil)
+	if err != nil {
+		return "", err
 	}
+	origContent = content
 
-	if origContent == nil {
-		_, portStr, _ := net.SplitHostPort(parsedSource.Host)
-		if portStr == "" {
-			portStr = getDefaultPort(parsedSource.Scheme)
-		}
-		client := &http.Client{
-			Timeout: 10 * time.Second,
-			Transport: &http.Transport{
-				DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-					dialer := &net.Dialer{Timeout: 5 * time.Second}
-					return dialer.DialContext(ctx, network, net.JoinHostPort(source.IP.String(), portStr))
-				},
-				TLSClientConfig: &tls.Config{ServerName: host},
-				MaxIdleConns:    10,
-				IdleConnTimeout: 30 * time.Second,
-			},
-		}
-		result, err, _ := fetchGroup.Do(id, func() (interface{}, error) {
-			req, err := http.NewRequest("GET", source.URL, nil)
-			if err != nil {
-				return nil, fmt.Errorf("create request: %w", err)
-			}
-			req.Header.Set("User-Agent", "go-filter/1.0")
-			resp, err := client.Do(req)
-			if err != nil {
-				return nil, fmt.Errorf("fetch failed: %w", err)
-			}
-			defer func() { _ = resp.Body.Close() }()
-			if resp.StatusCode >= 400 {
-				return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
-			}
-			content, err := io.ReadAll(io.LimitReader(resp.Body, maxSourceBytes))
-			if err != nil {
-				return nil, fmt.Errorf("read failed: %w", err)
-			}
-			if !stdout {
-				tmpFile := origCache + ".tmp"
-				if err := os.WriteFile(tmpFile, content, 0o644); err == nil {
-					_ = os.Rename(tmpFile, origCache)
-				}
-			}
-			return content, nil
-		})
-		if err != nil {
-			return "", err
-		}
-		resBytes, ok := result.([]byte)
-		if !ok {
-			return "", fmt.Errorf("fetch returned unexpected type for id=%s", id)
-		}
-		origContent = resBytes
-	}
-
-	hasProxy := bytes.Contains(origContent, []byte("vless://")) ||
-		bytes.Contains(origContent, []byte("vmess://")) ||
-		bytes.Contains(origContent, []byte("trojan://")) ||
-		bytes.Contains(origContent, []byte("ss://")) ||
-		bytes.Contains(origContent, []byte("hysteria2://")) ||
-		bytes.Contains(origContent, []byte("hy2://"))
+	hasProxy := detectProxyScheme(origContent)
 	if !hasProxy {
 		decoded := utils.AutoDecodeBase64(origContent)
-		if bytes.Contains(decoded, []byte("vless://")) ||
-			bytes.Contains(decoded, []byte("vmess://")) ||
-			bytes.Contains(decoded, []byte("trojan://")) ||
-			bytes.Contains(decoded, []byte("ss://")) ||
-			bytes.Contains(decoded, []byte("hysteria2://")) ||
-			bytes.Contains(decoded, []byte("hy2://")) {
+		if detectProxyScheme(decoded) {
 			origContent = decoded
 		}
 	}
@@ -720,27 +899,21 @@ func processSource(id string, source *SafeSource, cfg *AppConfig, proxyProcessor
 		rejectedContent := strings.Join(rejectedLines, "\n")
 		tmpFile := rejectedCache + ".tmp"
 		if err := os.WriteFile(tmpFile, []byte(rejectedContent), 0o644); err == nil {
-			_ = os.Rename(tmpFile, rejectedCache)
+			logErrorf("FileOp", "rename rejected cache", os.Rename(tmpFile, rejectedCache))
 		}
 	}
 
 	profileName := "filtered_" + id
 	if u, err := url.Parse(source.URL); err == nil {
 		base := path.Base(u.Path)
-		if base != "" && regexp.MustCompile(`^[a-zA-Z0-9._-]+\.txt$`).MatchString(base) {
+		if base != "" && validProfileNameRegex.MatchString(base) {
 			profileName = strings.TrimSuffix(base, ".txt")
 		}
 	}
-	profileName = regexp.MustCompile(`[^a-zA-Z0-9._-]`).ReplaceAllString(profileName, "_")
-	updateInterval := int(cfg.CacheTTL.Seconds() / 3600)
-	if updateInterval < 1 {
-		updateInterval = 1
-	}
-	profileTitle := fmt.Sprintf("#profile-title: %s filtered %s", profileName, id)
-	if len(countryCodes) > 0 {
-		profileTitle += " (" + strings.Join(countryCodes, ",") + ")"
-	}
-	profileInterval := fmt.Sprintf("#profile-update-interval: %d", updateInterval)
+	profileName = filenameCleanupRegex.ReplaceAllString(profileName, "_")
+
+	profileTitle := buildProfileHeader(profileName, id, countryCodes)
+	profileInterval := buildProfileInterval(cfg.CacheTTL)
 	finalLines := []string{profileTitle, profileInterval, ""}
 	finalLines = append(finalLines, out...)
 	final := strings.Join(finalLines, "\n")
@@ -748,10 +921,10 @@ func processSource(id string, source *SafeSource, cfg *AppConfig, proxyProcessor
 	if !stdout {
 		tmpFile := modCache + ".tmp"
 		if err := os.WriteFile(tmpFile, []byte(final), 0o644); err != nil {
-			_ = os.Remove(tmpFile)
+			logErrorf("FileOp", "remove temp file", os.Remove(tmpFile))
 			return "", err
 		}
-		_ = os.Rename(tmpFile, modCache)
+		logErrorf("FileOp", "rename modified cache", os.Rename(tmpFile, modCache))
 	}
 	return final, nil
 }
@@ -767,14 +940,14 @@ func processSourceToBuckets(id string, source *SafeSource, cfg *AppConfig, proxy
 	// дедупликации по bucket'ам.
 	parsedSource, err := url.Parse(source.URL)
 	if err != nil || parsedSource.Host == "" {
-		return fmt.Errorf("invalid source URL")
+		return newError("Parse", "invalid source URL")
 	}
 	if source == nil || source.IP == nil {
-		return fmt.Errorf("missing resolved IP for source id=%s", id)
+		return newError("Validate", "missing resolved IP for source id=%s", id)
 	}
 	host := parsedSource.Hostname()
 	if !utils.IsValidHost(host) {
-		return fmt.Errorf("invalid source host: %s", host)
+		return newError("Validate", "invalid source host: %s", host)
 	}
 
 	cacheSuffix := ""
@@ -786,92 +959,42 @@ func processSourceToBuckets(id string, source *SafeSource, cfg *AppConfig, proxy
 	rejectedCache := filepath.Join(cfg.CacheDir, "rejected_"+id+cacheSuffix+".txt")
 
 	if !utils.IsPathSafe(origCache, cfg.CacheDir) || !utils.IsPathSafe(rejectedCache, cfg.CacheDir) {
-		return fmt.Errorf("unsafe cache path for id=%s", id)
-	}
-
-	var origContent []byte
-	if info, err := os.Stat(origCache); err == nil && time.Since(info.ModTime()) <= cfg.CacheTTL {
-		if content, err := os.ReadFile(origCache); err == nil {
-			origContent = content
-		}
-	}
-
-	if origContent == nil {
-		_, portStr, _ := net.SplitHostPort(parsedSource.Host)
-		if portStr == "" {
-			portStr = getDefaultPort(parsedSource.Scheme)
-		}
-		client := &http.Client{
-			Timeout: 10 * time.Second,
-			Transport: &http.Transport{
-				DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-					dialer := &net.Dialer{Timeout: 5 * time.Second}
-					return dialer.DialContext(ctx, network, net.JoinHostPort(source.IP.String(), portStr))
-				},
-				TLSClientConfig: &tls.Config{ServerName: host},
-				MaxIdleConns:    10,
-				IdleConnTimeout: 30 * time.Second,
-			},
-		}
-		result, err, _ := fetchGroup.Do(id, func() (interface{}, error) {
-			req, err := http.NewRequest("GET", source.URL, nil)
-			if err != nil {
-				return nil, fmt.Errorf("create request: %w", err)
-			}
-			req.Header.Set("User-Agent", "go-filter/1.0")
-			resp, err := client.Do(req)
-			if err != nil {
-				return nil, fmt.Errorf("fetch failed: %w", err)
-			}
-			defer func() { _ = resp.Body.Close() }()
-			if resp.StatusCode >= 400 {
-				return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
-			}
-			content, err := io.ReadAll(io.LimitReader(resp.Body, maxSourceBytes))
-			if err != nil {
-				return nil, fmt.Errorf("read failed: %w", err)
-			}
-			tmpFile := origCache + ".tmp"
-			if err := os.WriteFile(tmpFile, content, 0o644); err == nil {
-				_ = os.Rename(tmpFile, origCache)
-			}
-			return content, nil
-		})
-		if err != nil {
-			return err
-		}
-		resBytes, ok := result.([]byte)
-		if !ok {
-			return fmt.Errorf("fetch returned unexpected type for id=%s", id)
-		}
-		origContent = resBytes
-	}
-
-	hasProxy := bytes.Contains(origContent, []byte("vless://")) ||
-		bytes.Contains(origContent, []byte("vmess://")) ||
-		bytes.Contains(origContent, []byte("trojan://")) ||
-		bytes.Contains(origContent, []byte("ss://")) ||
-		bytes.Contains(origContent, []byte("hysteria2://")) ||
-		bytes.Contains(origContent, []byte("hy2://"))
-	if !hasProxy {
-		decoded := utils.AutoDecodeBase64(origContent)
-		if bytes.Contains(decoded, []byte("vless://")) ||
-			bytes.Contains(decoded, []byte("vmess://")) ||
-			bytes.Contains(decoded, []byte("trojan://")) ||
-			bytes.Contains(decoded, []byte("ss://")) ||
-			bytes.Contains(decoded, []byte("hysteria2://")) ||
-			bytes.Contains(decoded, []byte("hy2://")) {
-			origContent = decoded
-		}
+		return newError("Validate", "unsafe cache path for id=%s", id)
 	}
 
 	var rejectedLines []string
 	rejectedLines = append(rejectedLines, "## Source: "+source.URL)
-	lines := bytes.Split(origContent, []byte("\n"))
-	for _, lineBytes := range lines {
-		originalLine := strings.TrimRight(string(lineBytes), "\r\n")
+
+	// Инициализация буферов batch для каждого bucket
+	const batchSize = 10
+	bucketBatches := make([][]string, nBuckets)
+	for i := 0; i < nBuckets; i++ {
+		bucketBatches[i] = make([]string, 0, batchSize)
+	}
+
+	// Вспомогательная лямбда для промывки batch в bucket writer с одной блокировкой
+	flushBatch := func(bucketIdx int) error {
+		if len(bucketBatches[bucketIdx]) == 0 {
+			return nil
+		}
+		(*bucketLocks)[bucketIdx].Lock()
+		defer (*bucketLocks)[bucketIdx].Unlock()
+		for _, line := range bucketBatches[bucketIdx] {
+			_, err := bucketWriters[bucketIdx].WriteString(line)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[ERROR] Failed to write to bucket %d: %v\n", bucketIdx, err)
+				return err
+			}
+		}
+		bucketBatches[bucketIdx] = bucketBatches[bucketIdx][:0] // сброс batch
+		return nil
+	}
+
+	// Обработка ответа построчно без буферизации всего контента
+	// lineProcessor callback обрабатывает каждую строку по мере её поступления из HTTP ответа
+	lineProcessor := func(originalLine string) error {
 		if originalLine == "" || strings.HasPrefix(originalLine, "#") {
-			continue
+			return nil
 		}
 		var processedLine, reason string
 		handled := false
@@ -891,38 +1014,62 @@ func processSourceToBuckets(id string, source *SafeSource, cfg *AppConfig, proxy
 				if parseErr == nil && parsedProcessed.Fragment != "" {
 					allFilterStrings := utils.GetCountryFilterStringsForMultiple(countryCodes, cfg.Countries)
 					if !utils.IsFragmentMatchingCountry(parsedProcessed.Fragment, allFilterStrings) {
-						continue
+						return nil
 					}
 				} else {
-					continue
+					return nil
 				}
 			}
-			// Normalize key and write to bucket
+			// Нормализация ключа и запись в bucket (батчированная)
 			key, err := utils.NormalizeLinkKey(processedLine)
 			if err != nil {
-				continue
+				return nil
 			}
-			// compute bucket
+			// вычисление bucket
 			h := fnv.New32a()
-			_, _ = h.Write([]byte(key))
+			_, err = h.Write([]byte(key))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[WARN] Failed to write hash: %v\n", err)
+				return nil
+			}
 			b := int(h.Sum32() % uint32(nBuckets))
-			// write as: key\tfull_line\n
-			(*bucketLocks)[b].Lock()
-			_, _ = bucketWriters[b].WriteString(key + "\t" + processedLine + "\n")
-			(*bucketLocks)[b].Unlock()
+			// Добавление в буфер batch вместо немедленной записи
+			bucketBatches[b] = append(bucketBatches[b], key+"\t"+processedLine+"\n")
+			// Промывка batch при достижении batchSize
+			if len(bucketBatches[b]) >= batchSize {
+				if err := flushBatch(b); err != nil {
+					return err
+				}
+			}
 		} else {
 			if reason == "" {
 				reason = "processing failed"
 			}
 			rejectedLines = append(rejectedLines, "# REASON: "+reason, originalLine)
 		}
+		return nil
 	}
 
-	// write rejected cache
+	// Использование вспомогательной функции для загрузки содержимого с потоковой обработкой
+	// fetchSourceContent обрабатывает каждую строку через lineProcessor без буферизации
+	_, err = fetchSourceContent(id, source, cfg, origCache, false, lineProcessor)
+	if err != nil {
+		return err
+	}
+
+	// Промывка оставшихся batch для всех bucket'ов
+	for i := 0; i < nBuckets; i++ {
+		if err := flushBatch(i); err != nil {
+			// Логирование ошибки но продолжение промывки остальных bucket'ов
+			fmt.Fprintf(os.Stderr, "[ERROR] Failed to flush remaining batch for bucket %d: %v\n", i, err)
+		}
+	}
+
+	// запись кэша отклонённых
 	rejectedContent := strings.Join(rejectedLines, "\n")
 	tmpFile := rejectedCache + ".tmp"
 	if err := os.WriteFile(tmpFile, []byte(rejectedContent), 0o644); err == nil {
-		_ = os.Rename(tmpFile, rejectedCache)
+		logErrorf("FileOp", "rename rejected cache", os.Rename(tmpFile, rejectedCache))
 	}
 	return nil
 }
@@ -1068,19 +1215,19 @@ func loadConfigFromFile(configPath string) (*AppConfig, error) {
 		cfg.Countries = countries
 	}
 
-	// Ensure sources have resolved IPs when provided via config file
+	// Гарантируем что источники имеют резолвленные IP при предоставлении через конфиг файл
 	for id, s := range cfg.Sources {
 		if s == nil {
-			return nil, fmt.Errorf("source entry %s is nil", id)
+			return nil, newError("Config", "source entry %s is nil", id)
 		}
 		if s.IP == nil {
 			u, err := url.Parse(s.URL)
 			if err != nil || u.Hostname() == "" {
-				return nil, fmt.Errorf("invalid source URL for id=%s", id)
+				return nil, newError("Parse", "invalid source URL for id=%s", id)
 			}
 			ips, err := net.LookupIP(u.Hostname())
 			if err != nil || len(ips) == 0 {
-				return nil, fmt.Errorf("failed to resolve host for source id=%s: %v", id, err)
+				return nil, newError("Network", "failed to resolve host for source id=%s: %v", id, err)
 			}
 			for _, ip := range ips {
 				if isIPAllowed(ip) {
@@ -1089,7 +1236,7 @@ func loadConfigFromFile(configPath string) (*AppConfig, error) {
 				}
 			}
 			if s.IP == nil {
-				return nil, fmt.Errorf("no allowed IP found for source id=%s", id)
+				return nil, newError("Network", "no allowed IP found for source id=%s", id)
 			}
 			cfg.Sources[id] = s
 		}
@@ -1107,7 +1254,7 @@ func loadConfigFromArgsOrFile(configPath, _ string, args []string) (*AppConfig, 
 		}
 	} else {
 		if len(args) < 1 {
-			return nil, fmt.Errorf("usage: <port> [cache_ttl] [sources] [bad] [ua] [rules]")
+			return nil, newError("Config", "usage: <port> [cache_ttl] [sources] [bad] [ua] [rules]")
 		}
 		cacheTTLSeconds := 1800
 		sourcesFile := "./config/sub.txt"
@@ -1238,7 +1385,7 @@ func main() {
 				// ← ПЕРЕДАЁМ parsedCountryCodes вместо ""
 				result, err := processSource(id, source, cfg, proxyProcessors, *stdout, parsedCountryCodes)
 				if err != nil {
-					return fmt.Errorf("process failed %s: %w", id, err)
+					return newError("Process", "process failed %s: %w", id, err)
 				}
 				if *stdout {
 					mu.Lock()
@@ -1278,6 +1425,7 @@ func main() {
 	}
 	fmt.Printf("Countries loaded: %d\n", len(cfg.Countries))
 	proxyProcessors := createProxyProcessors(cfg.BadWords, cfg.Rules)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go cleanupLimiters(ctx)

@@ -48,7 +48,7 @@ func TestIsLocalIP(t *testing.T) {
 		{"10.0.0.1", true},
 		{"8.8.8.8", false},
 		{"2001:4860:4860::8888", false},
-		{"invalid", true}, // Treats invalid as local
+		{"invalid", true}, // Рассматривается как локальный
 	}
 	for _, tt := range tests {
 		t.Run(tt.ip, func(t *testing.T) {
@@ -117,7 +117,7 @@ vless:
 		t.Fatal(err)
 	}
 
-	// Bad words и UA
+	// Запрещенные слова и User-Agent
 	if err := os.WriteFile(tempBadWordsFile, []byte("badword\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
