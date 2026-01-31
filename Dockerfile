@@ -16,7 +16,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -o filter main.go
 
 # Final stage
-FROM gcr.io/distroless/static:nonroot
+FROM chainguard/static:latest
 
 # Копируем бинарник
 COPY --from=builder /app/filter /filter
