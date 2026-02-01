@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  sub-filter:
+    image: ghcr.io/viktor45/sub-filter:latest
+    container_name: sub-filter
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config:/config:ro
+      - ./cache:/tmp/sub-filter-cache
+    command: 8080 1800
