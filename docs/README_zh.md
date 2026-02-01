@@ -67,7 +67,7 @@ go build -o sub-filter .
 
 本程序支持两种模式：**HTTP 服务器** 和 **命令行（CLI）**。
 
-示例[配置文件](./config)
+示例[配置文件](../config)
 
 ### 1. HTTP 服务器模式（动态过滤）
 

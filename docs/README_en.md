@@ -67,7 +67,7 @@ go build -o sub-filter .
 
 The program supports two modes: **HTTP server** and **CLI**.
 
-Example [configuration files](./config)
+Example [configuration files](../config)
 
 ### 1. HTTP Server Mode (Dynamic Filtering)
 
