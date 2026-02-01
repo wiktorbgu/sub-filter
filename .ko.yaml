@@ -1,5 +1,5 @@
 # .ko.yaml
-#defaultBaseImage: gcr.io/distroless/static:nonroot
+#defaultBaseImage: gcr.io/distroless/static-debian12
 
 defaultPlatform: linux/amd64
 platforms:
