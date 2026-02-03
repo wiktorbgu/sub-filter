@@ -181,26 +181,26 @@ Matching is **case-insensitive** and supports **URL decoding**.
 
 ## 🔤 Parameter Reference
 
-| Parameter        | Description                                |
-| ---------------- | ------------------------------------------ |
-| `<port>`         | HTTP server port (required in server mode) |
-| `cache_ttl`      | Cache TTL in seconds (default: 1800)       |
-| `sources_file`   | List of subscription URLs (one per line)   |
-| `bad_words_file` | List of forbidden words in server names    |
-| `uagent_file`    | Allowed User-Agent list (e.g., `Clash`)    |
-| `rules_file`     | Validation rules file (`rules.yaml`)       |
+| Parameter        | Description                                                                         |
+| ---------------- | ----------------------------------------------------------------------------------- |
+| `<port>`         | HTTP server port (required in server mode)                                          |
+| `cache_ttl`      | Cache TTL in seconds (default: 1800)                                                |
+| `sources_file`   | List of subscription URLs (one per line) [sub.txt](../config/sub.txt)               |
+| `bad_words_file` | List of forbidden words strip/delete rules [badwords.yaml](../config/badwords.yaml) |
+| `uagent_file`    | Allowed User-Agent list (e.g., `Clash`) [uagent.txt](../config/uagent.txt)          |
+| `rules_file`     | Validation rules file [rules.yaml](../config/rules.yaml)                            |
 
 ---
 
 ## 🖥️ CLI Flags
 
-| Flag          | Description                  |
-| ------------- | ---------------------------- |
-| `--cli`       | Run in CLI mode              |
-| `--stdout`    | Output to stdout             |
-| `--config`    | Path to config file          |
-| `--country`   | Filter by country (CLI only) |
-| `--countries` | Generate `countries.yaml`    |
+| Flag          | Description                                         |
+| ------------- | --------------------------------------------------- |
+| `--cli`       | Run in CLI mode                                     |
+| `--stdout`    | Output to stdout                                    |
+| `--config`    | Path to config file                                 |
+| `--country`   | Filter by country (CLI only)                        |
+| `--countries` | Generate [countries.yaml](../config/countries.yaml) |
 
 ---
 

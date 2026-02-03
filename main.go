@@ -4,7 +4,6 @@
 //   - HTTP-сервер для динамической фильтрации (/filter?id=1&c=AD)
 //   - CLI-режим для однократной обработки всех подписок (--cli)
 package main
-
 import (
 	"bufio"
 	"bytes"
@@ -28,6 +27,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"gopkg.in/yaml.v3"
 	_ "time/tzdata"
 
 	"sub-filter/hysteria2"
@@ -74,16 +75,21 @@ type AppConfig struct {
 	RulesFile       string        `mapstructure:"rules_file"`
 	CountriesFile   string        `mapstructure:"countries_file"`
 	AllowedUA       []string
-	BadWords        []string
+	BadWordRules    []BadWordRule
 	Sources         SourceMap
 	Rules           map[string]validator.Validator
 	Countries       map[string]utils.CountryInfo
 	MaxCountryCodes int `mapstructure:"max_country_codes"`
 	MaxMergeIDs     int `mapstructure:"max_merge_ids"`
 	MergeBuckets    int `mapstructure:"merge_buckets"`
-	// StripBadWordsInName: если true, вместо удаления всей строки при совпадении bad-word
-	// будет удалять только сам bad-word (регистронезависимо) из описания/fragment сервера.
-	StripBadWordsInName bool `mapstructure:"strip_bad_words_in_name"`
+}
+
+// BadWordRule описывает одно правило фильтрации bad-слов.
+// Поле Pattern — регулярное выражение в синтаксисе Go (`regexp`),
+// поле Action — либо "strip" (вырезать совпадение), либо "delete" (удалить всю строку).
+type BadWordRule struct {
+	Pattern string `yaml:"pattern"`
+	Action  string `yaml:"action"`
 }
 
 // Init устанавливает значения по умолчанию для полей AppConfig, если они не заданы.
@@ -99,7 +105,7 @@ func (cfg *AppConfig) Init() {
 		cfg.SourcesFile = "./config/sub.txt"
 	}
 	if cfg.BadWordsFile == "" {
-		cfg.BadWordsFile = "./config/bad.txt"
+		cfg.BadWordsFile = "./config/badwords.yaml"
 	}
 	if cfg.UAgentFile == "" {
 		cfg.UAgentFile = "./config/uagent.txt"
@@ -349,26 +355,42 @@ func fetchSourceContent(id string, source *SafeSource, cfg *AppConfig, origCache
 }
 
 // createProxyProcessors формирует список обработчиков ссылок для поддерживаемых протоколов.
-func createProxyProcessors(badWords []string, rules map[string]validator.Validator, stripBadWords bool) []ProxyLink {
+func createProxyProcessors(badRules []BadWordRule, rules map[string]validator.Validator) []ProxyLink {
+	// Компилируем правила для ускорения
+	type compiledRule struct {
+		re     *regexp.Regexp
+		action string
+		raw    string
+	}
+	compiled := make([]compiledRule, 0, len(badRules))
+	for _, br := range badRules {
+		if br.Pattern == "" {
+			continue
+		}
+		re, err := regexp.Compile(br.Pattern)
+		if err != nil {
+			logWarnf("Config", fmt.Sprintf("compile badword pattern %q", br.Pattern), err)
+			continue
+		}
+		act := strings.ToLower(strings.TrimSpace(br.Action))
+		if act != "strip" && act != "delete" {
+			act = "delete"
+		}
+		compiled = append(compiled, compiledRule{re: re, action: act, raw: br.Pattern})
+	}
+
 	checkBadWords := func(fragment string) (string, bool, string) {
 		if fragment == "" {
 			return fragment, false, ""
 		}
 		decoded := utils.FullyDecode(fragment)
-		lower := strings.ToLower(decoded)
-		for _, word := range badWords {
-			if word == "" {
-				continue
-			}
-			lw := strings.ToLower(word)
-			if strings.Contains(lower, lw) {
-				if stripBadWords {
-					// Удаляем все вхождения bad-word регистронезависимо
-					re := regexp.MustCompile("(?i)" + regexp.QuoteMeta(word))
-					newFrag := strings.TrimSpace(re.ReplaceAllString(decoded, ""))
+		for _, cr := range compiled {
+			if cr.re.MatchString(decoded) {
+				if cr.action == "strip" {
+					newFrag := strings.TrimSpace(cr.re.ReplaceAllString(decoded, ""))
 					return newFrag, false, ""
 				}
-				return fragment, true, fmt.Sprintf("bad word in name: %q", word)
+				return fragment, true, fmt.Sprintf("bad word match rule: %q", cr.raw)
 			}
 		}
 		return fragment, false, ""
@@ -379,12 +401,17 @@ func createProxyProcessors(badWords []string, rules map[string]validator.Validat
 		}
 		return &validator.GenericValidator{}
 	}
+	// Для совместимости формируем простой слайс паттернов (старый параметр bw)
+	patterns := make([]string, 0, len(badRules))
+	for _, br := range badRules {
+		patterns = append(patterns, br.Pattern)
+	}
 	return []ProxyLink{
-		vless.NewVLESSLink(badWords, utils.IsValidHost, utils.IsValidPort, checkBadWords, getValidator("vless")),
-		vmess.NewVMessLink(badWords, utils.IsValidHost, checkBadWords, getValidator("vmess")),
-		trojan.NewTrojanLink(badWords, utils.IsValidHost, checkBadWords, getValidator("trojan")),
-		ss.NewSSLink(badWords, utils.IsValidHost, checkBadWords, getValidator("ss")),
-		hysteria2.NewHysteria2Link(badWords, utils.IsValidHost, checkBadWords, getValidator("hysteria2")),
+		vless.NewVLESSLink(patterns, utils.IsValidHost, utils.IsValidPort, checkBadWords, getValidator("vless")),
+		vmess.NewVMessLink(patterns, utils.IsValidHost, checkBadWords, getValidator("vmess")),
+		trojan.NewTrojanLink(patterns, utils.IsValidHost, checkBadWords, getValidator("trojan")),
+		ss.NewSSLink(patterns, utils.IsValidHost, checkBadWords, getValidator("ss")),
+		hysteria2.NewHysteria2Link(patterns, utils.IsValidHost, checkBadWords, getValidator("hysteria2")),
 	}
 }
 
@@ -1207,7 +1234,7 @@ func loadConfigFromFile(configPath string) (*AppConfig, error) {
 		cfg.SourcesFile = "./config/sub.txt"
 	}
 	if cfg.BadWordsFile == "" {
-		cfg.BadWordsFile = "./config/bad.txt"
+		cfg.BadWordsFile = "./config/badwords.yaml"
 	}
 	if cfg.UAgentFile == "" {
 		cfg.UAgentFile = "./config/uagent.txt"
@@ -1226,9 +1253,14 @@ func loadConfigFromFile(configPath string) (*AppConfig, error) {
 		}
 		cfg.Sources = sources
 	}
-	if len(cfg.BadWords) == 0 {
-		bw, _ := loadTextFile(cfg.BadWordsFile, strings.ToLower)
-		cfg.BadWords = bw
+	// Загружаем правила bad-words (YAML или legacy plain text)
+	if len(cfg.BadWordRules) == 0 {
+		if rules, err := loadBadWordsFile(cfg.BadWordsFile); err == nil {
+			cfg.BadWordRules = rules
+		} else {
+			logWarnf("Config", "load badwords file", err)
+			cfg.BadWordRules = nil
+		}
 	}
 	if len(cfg.AllowedUA) == 0 {
 		ua, _ := loadTextFile(cfg.UAgentFile, nil)
@@ -1290,7 +1322,7 @@ func loadConfigFromArgsOrFile(configPath, _ string, args []string) (*AppConfig, 
 		}
 		cacheTTLSeconds := 1800
 		sourcesFile := "./config/sub.txt"
-		badWordsFile := "./config/bad.txt"
+		badWordsFile := "./config/badwords.yaml"
 		uagentFile := "./config/uagent.txt"
 		rulesFile := "./config/rules.yaml"
 		if len(args) >= 2 {
@@ -1323,7 +1355,13 @@ func loadConfigFromArgsOrFile(configPath, _ string, args []string) (*AppConfig, 
 		if err != nil {
 			return nil, err
 		}
-		cfg.BadWords, _ = loadTextFile(cfg.BadWordsFile, strings.ToLower)
+		// Load badword rules (YAML or legacy text)
+		if rules, err := loadBadWordsFile(cfg.BadWordsFile); err == nil {
+			cfg.BadWordRules = rules
+		} else {
+			logWarnf("Config", "load badwords file", err)
+			cfg.BadWordRules = nil
+		}
 		cfg.AllowedUA, _ = loadTextFile(cfg.UAgentFile, nil)
 		cfg.Rules, err = loadRulesOrDefault(cfg.RulesFile)
 		if err != nil {
@@ -1363,6 +1401,34 @@ func loadRulesOrDefault(rulesFile string) (map[string]validator.Validator, error
 		finalRulesFile = "./config/rules.yaml"
 	}
 	return validator.LoadRules(finalRulesFile)
+}
+
+// loadBadWordsFile загружает YAML-файл с правилами bad-words.
+// Ожидается, что файл содержит последовательность объектов {pattern, action}.
+// Если YAML-парсинг не удался, пробуем старый текстовый формат (одна строка = слово),
+// который интерпретируется как правило с действием "delete".
+func loadBadWordsFile(filename string) ([]BadWordRule, error) {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, err
+	}
+	var rules []BadWordRule
+	if err := yaml.Unmarshal(data, &rules); err == nil && len(rules) > 0 {
+		return rules, nil
+	}
+	// fallback: older plain-text format
+	lines, err := loadTextFile(filename, strings.TrimSpace)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]BadWordRule, 0, len(lines))
+	for _, l := range lines {
+		if l == "" {
+			continue
+		}
+		out = append(out, BadWordRule{Pattern: l, Action: "delete"})
+	}
+	return out, nil
 }
 
 func main() {
@@ -1407,7 +1473,7 @@ func main() {
 			}
 		}
 
-		proxyProcessors := createProxyProcessors(cfg.BadWords, cfg.Rules, cfg.StripBadWordsInName)
+		proxyProcessors := createProxyProcessors(cfg.BadWordRules, cfg.Rules)
 		g, _ := errgroup.WithContext(context.Background())
 		var mu sync.Mutex
 		var outputs []string
@@ -1456,7 +1522,7 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Printf("Countries loaded: %d\n", len(cfg.Countries))
-	proxyProcessors := createProxyProcessors(cfg.BadWords, cfg.Rules, cfg.StripBadWordsInName)
+	proxyProcessors := createProxyProcessors(cfg.BadWordRules, cfg.Rules)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

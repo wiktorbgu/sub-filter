@@ -37,14 +37,16 @@ The result is a ready-to-use subscription for **Clash, Sing-Box, routers, and ot
 
 ## 📚 Documentation
 
-| Topic                | Links                                                                                      |
-| -------------------- | ------------------------------------------------------------------------------------------ |
-| **Main Guide**       | [EN](docs/README_en.md) · [RU](docs/README.md) · [ZH](docs/README_zh.md)                   |
-| **FAQ**              | [EN](docs/FAQ_en.md) · [RU](docs/FAQ.md) · [ZH](docs/FAQ_zh.md)                            |
-| **Validation Rules** | [EN](docs/FILTER_RULES_en.md) · [RU](docs/FILTER_RULES.md) · [ZH](docs/FILTER_RULES_zh.md) |
-| **Configuration**    | [config/config.yaml](config/config.yaml)                                                   |
-| **Rules Example**    | [config/rules.yaml](config/rules.yaml)                                                     |
-|                      | [full set of config folder example](./config)                                              |
+| Topic                 | Links                                                                                      |
+| --------------------- | ------------------------------------------------------------------------------------------ |
+| **Main Guide**        | [EN](docs/README_en.md) · [RU](docs/README.md) · [ZH](docs/README_zh.md)                   |
+| **FAQ**               | [EN](docs/FAQ_en.md) · [RU](docs/FAQ.md) · [ZH](docs/FAQ_zh.md)                            |
+| **Validation Rules**  | [EN](docs/FILTER_RULES_en.md) · [RU](docs/FILTER_RULES.md) · [ZH](docs/FILTER_RULES_zh.md) |
+| **Bad words filters** | [EN](docs/BADWORDS_en.md) · [RU](docs/BADWORDS.md) · [ZH](docs/BADWORDS_zh.md)             |
+| **Configuration**     | [config/config.yaml](config/config.yaml)                                                   |
+| **Rules Example**     | [config/rules.yaml](config/rules.yaml)                                                     |
+| **Bad words Example** | [config/rules.yaml](config/badwords.yaml)                                                  |
+| Example configuration | [./config](./config)                                                                       |
 
 ---
 

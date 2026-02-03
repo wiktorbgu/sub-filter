@@ -1,1 +1,4 @@
-https://jsnegsukavsos.hb.ru-msk.vkcloud-storage.ru/love
+http://server1.example.url/subscription.txt
+http://server2.example2.url/subscription-vless.txt
+http://server3.example3.url/subscription-vmess.txt
+http://server4.example4.url/subscription-hy2.txt

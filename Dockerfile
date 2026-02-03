@@ -20,7 +20,7 @@ RUN strip --strip-all /app/filter
 RUN upx /app/filter
 
 # Final stage
-FROM chainguard/static:latest
+FROM gcr.io/distroless/static-debian12
 
 # Копируем бинарник
 COPY --from=builder /app/filter /filter

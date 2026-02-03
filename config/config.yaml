@@ -1,6 +1,6 @@
 sources_file: "./config/sub.txt"
 rules_file: "./config/rules.yaml"
-bad_words_file: "./config/bad.txt"
+bad_words_file: "./config/badwords.yaml"
 uagent_file: "./config/uagent.txt"
 cache_dir: "/tmp/sub-filter-cache"
 cache_ttl: 1800s
@@ -13,7 +13,3 @@ max_merge_ids: 10
 
 # Число шард (bucket) для streaming-merge на диске. Больше — меньше пиковая память, но больше файлов.
 merge_buckets: 256
-
-# Режим работы запрещенных слов. Если true, вместо удаления всей строки при совпадении bad-word
-# будет удалять только сам bad-word (регистронезависимо) из описания/fragment сервера.
-strip_bad_words_in_name: true
