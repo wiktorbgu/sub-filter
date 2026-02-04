@@ -123,6 +123,44 @@ func TestTrojanLink(t *testing.T) {
 	}
 }
 
+func TestTrojanLink_RejectFlow(t *testing.T) {
+	// НОВЫЙ ТЕСТ: проверяем, что параметр flow отклоняется
+	// (параметр удалён в Xray-core 2024+)
+	badWords := []string{}
+	checkBadWords := func(fragment string) (string, bool, string) {
+		return fragment, false, ""
+	}
+	link := NewTrojanLink(badWords, utils.IsValidHost, checkBadWords, loadRuleForTest("trojan"))
+
+	tests := []struct {
+		name   string
+		input  string
+		reason string
+	}{
+		{
+			name:   "reject flow parameter",
+			input:  "trojan://password@example.com:443?flow=xtls-rprx-vision",
+			reason: "flow parameter is no longer supported",
+		},
+		{
+			name:   "reject flow with other params",
+			input:  "trojan://password@example.com:443?type=tcp&flow=xtls-rprx-vision",
+			reason: "flow parameter is no longer supported",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, reason := link.Process(tt.input)
+			if got != "" {
+				t.Errorf("expected trojan with flow to be rejected, got: %q", got)
+			}
+			if !strings.Contains(reason, tt.reason) {
+				t.Errorf("reason = %q, want contains %q", reason, tt.reason)
+			}
+		})
+	}
+}
+
 func TestTrojanLink_Matches(t *testing.T) {
 	link := TrojanLink{}
 	if !link.Matches("trojan://...") {

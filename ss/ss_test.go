@@ -126,6 +126,108 @@ func TestSSLink(t *testing.T) {
 	}
 }
 
+func TestSSLink_UnsupportedCiphers(t *testing.T) {
+	// НОВЫЙ ТЕСТ: проверяем, что старые методы CFB/CTR отклоняются
+	// (удалены в Xray-core 2024+, заменены на AEAD и 2022-blake3)
+	badWords := []string{}
+	checkBadWords := func(fragment string) (string, bool, string) {
+		return fragment, false, ""
+	}
+	link := NewSSLink(badWords, utils.IsValidHost, checkBadWords, loadRuleForTest("ss"))
+
+	tests := []struct {
+		name   string
+		method string
+		reason string
+	}{
+		{
+			name:   "reject aes-128-cfb",
+			method: "aes-128-cfb",
+			reason: "unsupported cipher",
+		},
+		{
+			name:   "reject aes-256-cfb",
+			method: "aes-256-cfb",
+			reason: "unsupported cipher",
+		},
+		{
+			name:   "reject aes-128-ctr",
+			method: "aes-128-ctr",
+			reason: "unsupported cipher",
+		},
+		{
+			name:   "reject aes-256-ctr",
+			method: "aes-256-ctr",
+			reason: "unsupported cipher",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			userinfo := base64.RawURLEncoding.EncodeToString([]byte(tt.method + ":test123"))
+			got, reason := link.Process("ss://" + userinfo + "@example.com:8388")
+			if got != "" {
+				t.Errorf("expected %s to be rejected, got: %q", tt.method, got)
+			}
+			if !strings.Contains(reason, tt.reason) {
+				t.Errorf("reason = %q, want contains %q", reason, tt.reason)
+			}
+		})
+	}
+}
+
+func TestSSLink_SupportedCiphers(t *testing.T) {
+	// НОВЫЙ ТЕСТ: проверяем, что поддерживаемые методы принимаются
+	// AEAD методы и Shadowsocks 2022 должны работать
+	badWords := []string{}
+	checkBadWords := func(fragment string) (string, bool, string) {
+		return fragment, false, ""
+	}
+	link := NewSSLink(badWords, utils.IsValidHost, checkBadWords, loadRuleForTest("ss"))
+
+	tests := []struct {
+		name   string
+		method string
+	}{
+		{
+			name:   "accept aes-128-gcm",
+			method: "aes-128-gcm",
+		},
+		{
+			name:   "accept aes-256-gcm",
+			method: "aes-256-gcm",
+		},
+		{
+			name:   "accept chacha20-poly1305",
+			method: "chacha20-poly1305",
+		},
+		{
+			name:   "accept xchacha20-poly1305",
+			method: "xchacha20-poly1305",
+		},
+		{
+			name:   "accept 2022-blake3-aes-128-gcm",
+			method: "2022-blake3-aes-128-gcm",
+		},
+		{
+			name:   "accept 2022-blake3-aes-256-gcm",
+			method: "2022-blake3-aes-256-gcm",
+		},
+		{
+			name:   "accept 2022-blake3-chacha20-poly1305",
+			method: "2022-blake3-chacha20-poly1305",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			userinfo := base64.RawURLEncoding.EncodeToString([]byte(tt.method + ":test123"))
+			got, reason := link.Process("ss://" + userinfo + "@example.com:8388")
+			if got == "" {
+				t.Errorf("expected %s to be accepted, got error: %q", tt.method, reason)
+			}
+		})
+	}
+}
+
 func TestSSLink_Matches(t *testing.T) {
 	link := SSLink{}
 	if !link.Matches("ss://...") {

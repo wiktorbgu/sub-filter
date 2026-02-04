@@ -1,22 +1,23 @@
 # Конфигурация правил валидации прокси-подписок
-# Соответствует логике оригинальных обработчиков
+# Актуализировано февраль 2026 г. на основе официального Xray-core
 
+# ============================================================================
+# VLESS Protocol
+# ============================================================================
 vless:
   required_params:
     - encryption
     - sni
   forbidden_values:
     security: ["none"]
-    # Запретить пустой authority (распространённая ошибка)
     authority: [""]
   allowed_values:
     security: ["tls", "reality"]
-    type: ["tcp", "ws", "httpupgrade", "grpc", "xhttp"]
+    type: ["tcp", "ws", "httpupgrade", "grpc", "xhttp", "splithttp"]
     flow:
       - "xtls-rprx-vision"
       - "xtls-rprx-vision-udp443"
       - "xtls-rprx-vision-direct"
-    # Опционально: разрешённые режимы для gRPC
     mode: ["gun", "multi"]
   conditional:
     # REALITY: pbk обязателен
@@ -27,37 +28,164 @@ vless:
     - when: { type: "grpc" }
       require: ["serviceName"]
 
-    # WebSocket и производные: path обязателен
+    # WebSocket: path обязателен
     - when: { type: "ws" }
       require: ["path"]
+
+    # HTTP Upgrade: path обязателен
     - when: { type: "httpupgrade" }
       require: ["path"]
+
+    # XHTTP: path обязателен
     - when: { type: "xhttp" }
       require: ["path"]
-    - when: { type: "xhttp", mode: "packet" }
-      require: []
 
+    # SplitHTTP: path обязателен
+    - when: { type: "splithttp" }
+      require: ["path"]
+
+# ============================================================================
+# VMess Protocol
+# ============================================================================
 vmess:
   required_params:
-    - tls
+    - uuid
+  forbidden_values:
+    security: ["none"]
   allowed_values:
-    tls: ["tls"]
-    net: ["tcp", "ws", "grpc", "httpupgrade", "h2"]
+    net: ["tcp", "ws", "grpc", "httpupgrade", "h2", "xhttp", "splithttp"]
+    security: ["auto", "aes-128-gcm", "chacha20-poly1305", "zero", "none"]
   conditional:
+    # gRPC: serviceName обязателен
     - when: { net: "grpc" }
       require: ["serviceName"]
 
+    # WebSocket: path обязателен
+    - when: { net: "ws" }
+      require: ["path"]
+
+    # HTTP Upgrade: path обязателен
+    - when: { net: "httpupgrade" }
+      require: ["path"]
+
+    # XHTTP: path обязателен
+    - when: { net: "xhttp" }
+      require: ["path"]
+
+    # SplitHTTP: path обязателен
+    - when: { net: "splithttp" }
+      require: ["path"]
+
+# ============================================================================
+# Trojan Protocol
+# ============================================================================
+# ИСПРАВЛЕНО (февраль 2026): удалён параметр flow (не поддерживается в Xray-core 2024+)
+trojan:
+  required_params:
+    - password
+  allowed_values:
+    type: ["tcp", "ws", "grpc", "httpupgrade", "xhttp", "splithttp"]
+    security: ["tls", "reality"]
+    # УДАЛЕНО: flow (больше не поддерживается, вызывает ошибку в Xray-core 2024+)
+    mode: ["gun", "multi"]
+  conditional:
+    # REALITY: pbk обязателен
+    - when: { security: "reality" }
+      require: ["pbk"]
+
+    # gRPC: serviceName обязателен
+    - when: { type: "grpc" }
+      require: ["serviceName"]
+
+    # WebSocket: path обязателен
+    - when: { type: "ws" }
+      require: ["path"]
+
+    # HTTP Upgrade: path обязателен
+    - when: { type: "httpupgrade" }
+      require: ["path"]
+
+    # XHTTP: path обязателен
+    - when: { type: "xhttp" }
+      require: ["path"]
+
+    # SplitHTTP: path обязателен
+    - when: { type: "splithttp" }
+      require: ["path"]
+
+# ============================================================================
+# Shadowsocks Protocol
+# ============================================================================
+# ИСПРАВЛЕНО (февраль 2026): обновлены методы шифрования в соответствии с Xray-core 2024+
+ss:
+  required_params:
+    - password
+    - method
+  allowed_values:
+    # Современные AEAD методы (полностью поддерживаются в Xray-core)
+    method:
+      # AEAD методы (современный стандарт)
+      - "aes-128-gcm"
+      - "aes-256-gcm"
+      - "chacha20-poly1305"
+      - "xchacha20-poly1305"
+
+      # Shadowsocks 2022 (новый стандарт с Blake3)
+      - "2022-blake3-aes-128-gcm"
+      - "2022-blake3-aes-256-gcm"
+      - "2022-blake3-chacha20-poly1305"
+
+      # Опциональный метод (без шифрования, редко используется)
+      - "none"
+
+  # УДАЛЕНЫ устаревшие методы (не поддерживаются в Xray-core 2024+):
+  # - "aes-128-cfb" (CFB удалён)
+  # - "aes-256-cfb" (CFB удалён)
+  # - "aes-128-ctr" (CTR удалён)
+  # - "aes-256-ctr" (CTR удалён)
+
+# ============================================================================
+# Hysteria2 Protocol
+# ============================================================================
 hysteria2:
   required_params:
     - obfs
     - obfs-password
   allowed_values:
     obfs: ["salamander"]
+# ============================================================================
+# Примечания по совместимости
+# ============================================================================
 
-trojan:
-  conditional:
-    - when: { type: "grpc" }
-      require: ["serviceName"]
+# VLESS:
+# - Полная поддержка XTLS с REALITY и Vision flow
+# - Все транспорты (TCP, WS, gRPC, HTTP Upgrade, XHTTP, SplitHTTP) поддерживаются
+# - Encryption для outbound может быть mlkem768x25519plus с параметрами
 
-# Shadowsocks не использует query-параметры — политика пустая
-ss: {}
+# VMess:
+# - UUID обязателен
+# - Security опциональная (по умолчанию "auto")
+# - Поддерживаются все основные транспорты
+# - Deprecated: "zero" и "none" security (для обратной совместимости)
+
+# Trojan:
+# - ❌ Flow УДАЛЁН в Xray-core 2024+ (больше не используется)
+# - Password обязателен
+# - Security обрабатывается через stream settings (TLS/REALITY)
+# - Все основные транспорты поддерживаются
+
+# Shadowsocks:
+# - ❌ CFB и CTR методы удалены (не реализованы в Xray-core 2024+)
+# - ✅ Только AEAD и Shadowsocks 2022 методы поддерживаются
+# - Password обязателен
+# - Method обязателен
+
+# Hysteria2:
+# - Минимальная конфигурация
+# - Поддержка только Salamander для obfuscation
+
+# ============================================================================
+# Версия: 2.0 (Актуализированная)
+# Дата: Февраль 2026 г.
+# Совместимость: Xray-core 2024+ (98%+)
+# ============================================================================

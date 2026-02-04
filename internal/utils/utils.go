@@ -315,6 +315,11 @@ func NormalizeLinkKey(line string) (string, error) {
 			continue
 		}
 		nk := strings.ToLower(strings.TrimSpace(k))
+		// ВАЖНО: для Trojan игнорируем параметр 'flow' (удалён в Xray-core 2024+)
+		// Это гарантирует, что конфиги с и без flow будут считаться дубликатами
+		if scheme == "trojan" && nk == "flow" {
+			continue
+		}
 		// preserve original key casing for the first occurrence
 		if _, exists := origKey[nk]; !exists {
 			origKey[nk] = k
