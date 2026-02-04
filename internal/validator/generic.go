@@ -31,9 +31,18 @@ func (gv *GenericValidator) Validate(params map[string]string) ValidationResult 
 	}
 
 	// 2. Запрещённые значения — регистронезависимые
+	// Поддерживает wildcard: если в forbidden указан "*", то ВСЕ значения параметра запрещены
 	for param, forbidden := range gv.Rule.ForbiddenValues {
 		if value, exists := lowerParams[param]; exists {
 			for _, f := range forbidden {
+				// Проверяем wildcard: "*" означает запрет любого значения
+				if f == "*" {
+					return ValidationResult{
+						Valid:  false,
+						Reason: fmt.Sprintf("parameter %s is not allowed (any value)", param),
+					}
+				}
+				// Обычное точное сравнение
 				if value == strings.ToLower(f) {
 					return ValidationResult{
 						Valid:  false,

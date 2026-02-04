@@ -16,12 +16,11 @@ import (
 //
 //nolint:revive
 type SSLink struct {
-	badWords         []string
-	isValidHost      func(string) bool
-	checkBadWords    func(string) (string, bool, string)
-	ssCipherRe       *regexp.Regexp
-	ruleValidator    validator.Validator
-	supportedMethods map[string]bool // Кэш поддерживаемых методов
+	badWords      []string
+	isValidHost   func(string) bool
+	checkBadWords func(string) (string, bool, string)
+	ssCipherRe    *regexp.Regexp
+	ruleValidator validator.Validator
 }
 
 // NewSSLink создаёт новый обработчик Shadowsocks.
@@ -34,30 +33,12 @@ func NewSSLink(
 	if val == nil {
 		val = &validator.EmptyValidator{}
 	}
-	// Инициализируем поддерживаемые методы согласно Xray-core 2024+
-	supportedMethods := map[string]bool{
-		// AEAD методы (современный стандарт, полностью поддерживаются в Xray-core)
-		"aes-128-gcm":        true,
-		"aes-256-gcm":        true,
-		"chacha20-poly1305":  true,
-		"xchacha20-poly1305": true,
-		"none":               true, // Без шифрования (редко используется)
-
-		// Shadowsocks 2022 (новый стандарт с Blake3)
-		"2022-blake3-aes-128-gcm":       true,
-		"2022-blake3-aes-256-gcm":       true,
-		"2022-blake3-chacha20-poly1305": true,
-
-		// УДАЛЕНЫ (не поддерживаются в Xray-core 2024+):
-		// aes-128-cfb, aes-256-cfb, aes-128-ctr, aes-256-ctr
-	}
 	return &SSLink{
-		badWords:         bw,
-		isValidHost:      vh,
-		checkBadWords:    cb,
-		ssCipherRe:       regexp.MustCompile(`^[a-zA-Z0-9_+-]+$`),
-		ruleValidator:    val,
-		supportedMethods: supportedMethods,
+		badWords:      bw,
+		isValidHost:   vh,
+		checkBadWords: cb,
+		ssCipherRe:    regexp.MustCompile(`^[a-zA-Z0-9_+-]+$`),
+		ruleValidator: val,
 	}
 }
 
@@ -97,12 +78,8 @@ func (s *SSLink) Process(sLink string) (string, string) {
 		return "", "invalid cipher or password"
 	}
 
-	// Проверяем, поддерживается ли метод шифрования (согласно Xray-core 2024+)
-	// ВАЖНО: CFB и CTR методы больше не поддерживаются
-	// Поддерживаются только AEAD и Shadowsocks 2022 методы
-	if !s.supportedMethods[strings.ToLower(cipher)] {
-		return "", "shadowsocks: unsupported cipher method (CFB, CTR and other legacy methods are not supported, only AEAD and 2022-blake3 methods)"
-	}
+	// Валидация метода шифрования будет выполнена через ruleValidator
+	// (проверка allowed_values и forbidden_values для параметра 'method' в rules.yaml)
 
 	host, port, ok := s.parseHostPort(u)
 	if !ok {

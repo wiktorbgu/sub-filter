@@ -83,10 +83,11 @@ vmess:
 trojan:
   required_params:
     - password
+  forbidden_values:
+    flow: ["*"] # Flow полностью запрещён в Xray-core 2024+
   allowed_values:
     type: ["tcp", "ws", "grpc", "httpupgrade", "xhttp", "splithttp"]
     security: ["tls", "reality"]
-    # УДАЛЕНО: flow (больше не поддерживается, вызывает ошибку в Xray-core 2024+)
     mode: ["gun", "multi"]
   conditional:
     # REALITY: pbk обязателен
@@ -121,6 +122,12 @@ ss:
   required_params:
     - password
     - method
+  forbidden_values:
+    method:
+      - "aes-128-cfb"
+      - "aes-256-cfb"
+      - "aes-128-ctr"
+      - "aes-256-ctr"
   allowed_values:
     # Современные AEAD методы (полностью поддерживаются в Xray-core)
     method:
@@ -137,12 +144,6 @@ ss:
 
       # Опциональный метод (без шифрования, редко используется)
       - "none"
-
-  # УДАЛЕНЫ устаревшие методы (не поддерживаются в Xray-core 2024+):
-  # - "aes-128-cfb" (CFB удалён)
-  # - "aes-256-cfb" (CFB удалён)
-  # - "aes-128-ctr" (CTR удалён)
-  # - "aes-256-ctr" (CTR удалён)
 
 # ============================================================================
 # Hysteria2 Protocol

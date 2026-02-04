@@ -39,11 +39,18 @@ func loadRuleForTest(proto string) validator.Validator {
 			},
 		},
 		"trojan": {
+			ForbiddenValues: map[string][]string{
+				"flow": {"*"},
+			},
 			Conditional: []validator.Condition{
 				{When: map[string]string{"type": "grpc"}, Require: []string{"serviceName"}},
 			},
 		},
-		"ss": {}, // пустое правило
+		"ss": {
+			ForbiddenValues: map[string][]string{
+				"method": {"aes-128-cfb", "aes-256-cfb", "aes-128-ctr", "aes-256-ctr"},
+			},
+		},
 	}
 	if rule, ok := rules[proto]; ok {
 		return &validator.GenericValidator{Rule: rule}
@@ -121,55 +128,6 @@ func TestSSLink(t *testing.T) {
 				if !strings.Contains(reason, tt.reason) {
 					t.Errorf("reason = %q, want contains %q", reason, tt.reason)
 				}
-			}
-		})
-	}
-}
-
-func TestSSLink_UnsupportedCiphers(t *testing.T) {
-	// НОВЫЙ ТЕСТ: проверяем, что старые методы CFB/CTR отклоняются
-	// (удалены в Xray-core 2024+, заменены на AEAD и 2022-blake3)
-	badWords := []string{}
-	checkBadWords := func(fragment string) (string, bool, string) {
-		return fragment, false, ""
-	}
-	link := NewSSLink(badWords, utils.IsValidHost, checkBadWords, loadRuleForTest("ss"))
-
-	tests := []struct {
-		name   string
-		method string
-		reason string
-	}{
-		{
-			name:   "reject aes-128-cfb",
-			method: "aes-128-cfb",
-			reason: "unsupported cipher",
-		},
-		{
-			name:   "reject aes-256-cfb",
-			method: "aes-256-cfb",
-			reason: "unsupported cipher",
-		},
-		{
-			name:   "reject aes-128-ctr",
-			method: "aes-128-ctr",
-			reason: "unsupported cipher",
-		},
-		{
-			name:   "reject aes-256-ctr",
-			method: "aes-256-ctr",
-			reason: "unsupported cipher",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			userinfo := base64.RawURLEncoding.EncodeToString([]byte(tt.method + ":test123"))
-			got, reason := link.Process("ss://" + userinfo + "@example.com:8388")
-			if got != "" {
-				t.Errorf("expected %s to be rejected, got: %q", tt.method, got)
-			}
-			if !strings.Contains(reason, tt.reason) {
-				t.Errorf("reason = %q, want contains %q", reason, tt.reason)
 			}
 		})
 	}

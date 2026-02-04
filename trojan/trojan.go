@@ -73,12 +73,8 @@ func (t *TrojanLink) Process(s string) (string, string) {
 	params := utils.ParamsFromValues(q)
 	params = utils.NormalizeParams(params)
 
-	// ВАЖНО: параметр 'flow' больше не поддерживается в Trojan (удалён в Xray-core 2024+)
-	// Отклоняем конфиги с этим параметром
-	if flow, hasFlow := params["flow"]; hasFlow && flow != "" {
-		return "", "trojan: flow parameter is no longer supported (removed in Xray-core 2024+)"
-	}
-
+	// Валидация параметров выполняется через ruleValidator
+	// (проверка forbidden_values для параметра 'flow' в rules.yaml)
 	if result := t.ruleValidator.Validate(params); !result.Valid {
 		return "", "Trojan: " + result.Reason
 	}

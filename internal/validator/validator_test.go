@@ -182,6 +182,70 @@ func TestGenericValidator_Conditional(t *testing.T) {
 	}
 }
 
+// TestGenericValidator_ForbiddenValuesWildcard проверяет поддержку wildcard (*) в forbidden_values.
+// Wildcard (*) означает, что ВСЕ значения параметра запрещены.
+func TestGenericValidator_ForbiddenValuesWildcard(t *testing.T) {
+	rule := Rule{
+		ForbiddenValues: map[string][]string{
+			"flow": {"*"}, // Любое значение flow запрещено
+		},
+	}
+	v := &GenericValidator{Rule: rule}
+	tests := []struct {
+		name   string
+		params map[string]string
+		valid  bool
+		reason string
+	}{
+		{"any flow value is forbidden", map[string]string{"flow": "xtls-rprx-vision"}, false, "parameter flow is not allowed"},
+		{"different flow value", map[string]string{"flow": "xtls-rprx-vision-udp443"}, false, "parameter flow is not allowed"},
+		{"empty flow value", map[string]string{"flow": ""}, false, "parameter flow is not allowed"},
+		{"missing flow is ok", map[string]string{}, true, ""}, // Параметр не требуется
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := v.Validate(tt.params)
+			if result.Valid != tt.valid {
+				t.Errorf("Validate() = %v, want %v", result.Valid, tt.valid)
+			}
+			if !tt.valid && !stringsContains(result.Reason, tt.reason) {
+				t.Errorf("reason = %q, want contains %q", result.Reason, tt.reason)
+			}
+		})
+	}
+}
+
+// TestGenericValidator_ForbiddenValuesWildcardWithSpecific проверяет комбинацию wildcard и специфичных значений.
+func TestGenericValidator_ForbiddenValuesWildcardWithSpecific(t *testing.T) {
+	rule := Rule{
+		ForbiddenValues: map[string][]string{
+			"method": {"aes-128-cfb", "aes-256-cfb", "*"}, // Включает wildcard с специфичными значениями
+		},
+	}
+	v := &GenericValidator{Rule: rule}
+	tests := []struct {
+		name   string
+		params map[string]string
+		valid  bool
+		reason string
+	}{
+		{"wildcard triggers first", map[string]string{"method": "aes-128-gcm"}, false, "parameter method is not allowed"},
+		{"specific forbidden", map[string]string{"method": "aes-128-cfb"}, false, "forbidden value for method"},
+		{"missing method is ok", map[string]string{}, true, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := v.Validate(tt.params)
+			if result.Valid != tt.valid {
+				t.Errorf("Validate() = %v, want %v", result.Valid, tt.valid)
+			}
+			if !tt.valid && !stringsContains(result.Reason, tt.reason) {
+				t.Errorf("reason = %q, want contains %q", result.Reason, tt.reason)
+			}
+		})
+	}
+}
+
 func stringsContains(s, substr string) bool {
 	return substr == "" || strings.Contains(s, substr)
 }
