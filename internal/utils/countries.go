@@ -96,6 +96,9 @@ func GenerateCountries() {
 		for _, lang := range c.Name.NativeName {
 			nativeParts = append(nativeParts, lang.Common, lang.Official)
 		}
+		// Это гарантирует, что порядок native-имен будет стабильным при каждом запуске генератора,
+		// что полезно для контроля версий и предотвращения ненужных изменений в countries.yaml.
+		sort.Strings(nativeParts)
 
 		result[cca2] = CountryYAML{
 			CCA3:   strings.ToUpper(c.Cca3),
