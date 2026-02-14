@@ -862,7 +862,8 @@ func handleMerge(w http.ResponseWriter, r *http.Request, cfg *AppConfig, proxyPr
 		f, err := os.Open(p)
 		if err != nil {
 			// пропуск пустых/отсутствующих bucket'ов
-			logWarnf("FileOp", fmt.Sprintf("open bucket_%d", i), err)
+			// это может произойти если все строки для этого bucket'а были отфильтрованы
+			// logWarnf("FileOp", fmt.Sprintf("open bucket_%d", i), err)
 			continue
 		}
 		scanner := bufio.NewScanner(f)
