@@ -4,6 +4,7 @@
 //   - HTTP-сервер для динамической фильтрации (/filter?id=1&c=AD)
 //   - CLI-режим для однократной обработки всех подписок (--cli)
 package main
+
 import (
 	"bufio"
 	"bytes"
@@ -28,8 +29,9 @@ import (
 	"syscall"
 	"time"
 
-	"gopkg.in/yaml.v3"
 	_ "time/tzdata"
+
+	"gopkg.in/yaml.v3"
 
 	"sub-filter/hysteria2"
 	"sub-filter/internal/utils"
@@ -367,6 +369,12 @@ func createProxyProcessors(badRules []BadWordRule, rules map[string]validator.Va
 		if br.Pattern == "" {
 			continue
 		}
+		// Проверка шаблона регулярного выражения на устойчивость к ReDoS-атакам
+		// Компилировать только в том случае, если шаблон простой и не содержит опасных конструкций
+		if !isRegexSafe(br.Pattern) {
+			logWarnf("Config", fmt.Sprintf("dangerous badword pattern rejected: %q", br.Pattern), nil)
+			continue
+		}
 		re, err := regexp.Compile(br.Pattern)
 		if err != nil {
 			logWarnf("Config", fmt.Sprintf("compile badword pattern %q", br.Pattern), err)
@@ -473,9 +481,17 @@ func getDefaultPort(scheme string) string {
 	return "80"
 }
 
+// isIPAllowed проверяет разрешён ли IP адрес для использования как прокси.
+// Отклоняет localhosts, private ranges и link-local адреса для предотвращения SSRF.
 func isIPAllowed(ip net.IP) bool {
-	return !ip.IsLoopback() && !ip.IsPrivate() && !ip.IsLinkLocalUnicast() &&
-		!ip.IsLinkLocalMulticast() && !ip.IsMulticast()
+	if ip == nil {
+		return false
+	}
+	// Отклоняем все private, loopback и link-local адреса для предотвращения SSRF
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return false
+	}
+	return true
 }
 
 func isValidSourceURL(rawURL string) bool {
@@ -521,9 +537,6 @@ func getLimiter(ip string) *rate.Limiter {
 	return limiter
 }
 
-// getLimiter возвращает или создаёт ограничитель скорости для указанного IP.
-// Также обновляет отметку времени последнего доступа. Оптимизировано с sync.Map для безблокировочного чтения.
-
 func cleanupLimiters(ctx context.Context) {
 	ticker := time.NewTicker(cleanupInterval)
 	defer ticker.Stop()
@@ -556,9 +569,6 @@ func cleanupLimiters(ctx context.Context) {
 	}
 }
 
-// cleanupLimiters периодически удаляет неиспользуемые IP ограничители из памяти.
-// Функция выполняется до отмены контекста.
-
 func isValidUserAgent(ua string, allowedUA []string) bool {
 	lowerUA := strings.ToLower(ua)
 	for _, prefix := range builtinAllowedPrefixes {
@@ -574,9 +584,29 @@ func isValidUserAgent(ua string, allowedUA []string) bool {
 	return false
 }
 
-// isValidUserAgent проверяет, разрешён ли User-Agent запроса.
-// Разрешаются встроенные префиксы и значения из конфигурации.
-// Сравнение проводится без учёта регистра.
+// encodeRFC5987 кодирует имя файла согласно RFC 5987 для безопасной передачи в Content-Disposition.
+// Это предотвращает HTTP response splitting и header injection атаки.
+func encodeRFC5987(filename string) string {
+	// Если имя файла содержит только ASCII символы и безопасные символы, используем как есть
+	if isASCIISafeFilename(filename) {
+		return filename
+	}
+	// Иначе кодируем как UTF-8 согласно RFC 5987
+	return "UTF-8''" + url.QueryEscape(filename)
+}
+
+// isASCIISafeFilename проверяет являются ли все символы безопасными для заголовка
+func isASCIISafeFilename(filename string) bool {
+	for _, b := range filename {
+		// Разрешаем только ASCII буквы, цифры и безопасные символы
+		if b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' ||
+			b == '.' || b == '-' || b == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
 
 func serveFile(w http.ResponseWriter, content []byte, sourceURL, id string) {
 	filename := "filtered_" + id + ".txt"
@@ -591,16 +621,66 @@ func serveFile(w http.ResponseWriter, content []byte, sourceURL, id string) {
 		filename += ".txt"
 	}
 	filename = filepath.Base(filename)
+
+	// Санитизация filename для предотвращения Response Splitting атак
+	// Используем RFC 5987 encoding для безопасной передачи
+	encodedFilename := encodeRFC5987(filename)
+
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename*=%s", encodedFilename))
 	w.Header().Set("Content-Length", strconv.Itoa(len(content)))
+	// Add security headers
+	// Защита от атак на основе контента
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+
+	// Защита от фрейм-атак (современный подход)
+	// w.Header().Set("Content-Security-Policy",
+	//	"frame-ancestors 'none'; default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'")
+
+	// Контроль кэширования (достаточно одного заголовка)
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate")
+
+	// Контроль рефереров
+	// w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+
+	// Политика разрешений
+	// w.Header().Set("Permissions-Policy",
+	//	"geolocation=(), microphone=(), camera=()")
+
+	// Изоляция межсайтовых ресурсов
+	// w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+	// w.Header().Set("Cross-Origin-Embedder-Policy", "require-corp")
+	// w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
 	_, err := w.Write(content)
 	logErrorf("HTTP", "write response", err)
 }
 
-// serveFile отправляет `content` в ответ как загружаемый .txt файл.
-// Имя файла формируется из URL источника или переданного id и
-// очищается для предотвращения обхода путей и недопустимых символов.
+// isRegexSafe проверяет регулярное выражение на потенциальные ReDoS атаки.
+// Отклоняет опасные паттерны с незаконченными квантификаторами и вложенными группами.
+func isRegexSafe(pattern string) bool {
+	// Блокируем явно опасные конструкции
+	dangerousPatterns := []string{
+		"(.*)*",   // вложенные * квантификаторы
+		"(.*)+",   // вложенные + квантификаторы
+		"(.+)*",   // вложенные + квантификаторы
+		"(.+)+",   // вложенные + квантификаторы
+		"(\\s+)*", // вложенные whitespace квантификаторы
+		"(\\s+)+", // вложенные whitespace квантификаторы
+		"(.*?)*",  // вложенные lazy квантификаторы
+		"(.*?)+",  // вложенные lazy квантификаторы
+	}
+	for _, dangerous := range dangerousPatterns {
+		if strings.Contains(pattern, dangerous) {
+			return false
+		}
+	}
+	// Проверяем сложность: количество скобок
+	opening := strings.Count(pattern, "(")
+	if opening > 3 {
+		return false // слишком много групп - потенциальный ReDoS
+	}
+	return true
+}
 
 // isLocalIP возвращает true для loopback/частных адресов или если
 // входная строка не распарсилась как IP. Это позволяет трактовать
