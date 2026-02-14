@@ -1282,11 +1282,15 @@ func loadSourcesFromFile(sourcesFile string) (SourceMap, error) {
 			}
 		}
 	}
+	// Если после фильтрации не осталось ни одного валидного источника, возвращаем ошибку, чтобы не запускать сервер с пустой конфигурацией.
+	if len(sources) < 1 {
+		return nil, newError("Config", "source file has no valid sources: %s", sourcesFile)
+	}
 	return sources, nil
 }
 
 func loadConfigFromFile(configPath string) (*AppConfig, error) {
-	viper.Reset() // ←←← КЛЮЧЕВОЕ ИЗМЕНЕНИЕ
+	viper.Reset()
 	viper.SetConfigFile(configPath)
 	ext := filepath.Ext(configPath)
 	if ext == ".yaml" || ext == ".yml" {
@@ -1560,7 +1564,6 @@ func main() {
 		for id, source := range cfg.Sources {
 			id, source := id, source
 			g.Go(func() error {
-				// ← ПЕРЕДАЁМ parsedCountryCodes вместо ""
 				result, err := processSource(id, source, cfg, proxyProcessors, *stdout, parsedCountryCodes)
 				if err != nil {
 					return newError("Process", "process failed %s: %w", id, err)
