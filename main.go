@@ -895,7 +895,8 @@ func handleMerge(w http.ResponseWriter, r *http.Request, cfg *AppConfig, proxyPr
 		if err := os.Remove(p); err == nil {
 			bucketExists[i] = false // файл успешно удалён
 		} else {
-			logWarnf("FileOp", fmt.Sprintf("remove bucket_%d", i), err)
+			// пропуск ошибки удаления, так как это не критично и может быть вызвано внешними факторами
+			// logWarnf("FileOp", fmt.Sprintf("remove bucket_%d", i), err)
 		}
 	}
 	// удаление временной директории со всем содержимым
